@@ -102,7 +102,7 @@ async def _event_stream(request: RunCreateRequest, orchestrator):
             "token_budget": run.budget_policy.total_token_budget,
             "max_rounds": run.budget_policy.max_rounds,
             "agents": [
-                {"agent_id": agent.agent_id, "display_name": agent.display_name}
+                {"agent_id": agent.agent_id, "display_name": agent.display_label}
                 for agent in run.agents
             ],
         },

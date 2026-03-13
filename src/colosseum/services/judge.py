@@ -28,6 +28,7 @@ from colosseum.core.models import (
 )
 from colosseum.services.budget import BudgetManager
 from colosseum.services.provider_runtime import ProviderRuntimeService
+from colosseum.services.prompt_contracts import JUDGE_RECORD_ONLY_GUARDRAIL
 
 
 class JudgeService:
@@ -357,15 +358,13 @@ class JudgeService:
         assert run.judge.provider is not None  # caller guarantees this
         suggested_round = self._next_round_type(run)
         suggested_agenda = self._select_agenda(run, suggested_round)
-        allowed_round_types = ", ".join(round_type.value for round_type in RoundType)
+        allowed_round_types = ", ".join(RoundType.supported_values())
         judge_record = self._build_ai_judge_record(run)
         judge_instructions = (
             f"You are judging a structured evidence-first debate on: '{run.task.title}'. "
             f"Problem: {run.task.problem_statement}. "
             f"The debate has run {len(run.debate_rounds)} round(s) so far. "
-            "Judge ONLY from the submitted plans and debate record below. "
-            "Do not browse, do not ask for external search, and do not mention browsing limitations. "
-            "Treat debater-submitted citations, concessions, and uncertainties as the full record for this decision. "
+            f"{JUDGE_RECORD_ONLY_GUARDRAIL} "
             f"\n\nSubmitted record:\n{judge_record}\n\n"
             "Evaluate: (1) disagreement level between plans on this specific task, "
             "(2) novelty of recent arguments — are agents adding new task-relevant support or repeating themselves, "
@@ -426,14 +425,17 @@ class JudgeService:
         agenda = DebateAgenda.model_validate(payload_agenda) if payload_agenda else suggested_agenda
         return JudgeDecision(
             mode=JudgeMode.AI,
-            action=JudgeActionType(payload.get("action", "continue_debate")),
+            action=JudgeActionType.coerce(
+                payload.get("action"),
+                fallback=JudgeActionType.CONTINUE_DEBATE,
+            ),
             reasoning=str(payload.get("reasoning", result.content)),
             confidence=float(payload.get("confidence", 0.7)),
             disagreement_level=float(
                 payload.get("disagreement_level", self._disagreement_level(run))
             ),
             expected_value_of_next_round=float(payload.get("expected_value_of_next_round", 0.2)),
-            next_round_type=self._coerce_round_type(
+            next_round_type=RoundType.coerce(
                 payload.get("next_round_type"),
                 fallback=suggested_round,
             )
@@ -571,8 +573,7 @@ class JudgeService:
             f"You are the judge for a debate on: '{run.task.title}'. "
             f"Problem: {run.task.problem_statement}. "
             f"Success criteria: {run.task.success_criteria}. "
-            "Judge ONLY from the submitted plans and debate record below. "
-            "Do not browse, do not ask for external search, and do not mention browsing limitations. "
+            f"{JUDGE_RECORD_ONLY_GUARDRAIL} "
             f"\n\nParticipating plans:\n{plan_summaries}\n\nSubmitted record:\n{judge_record}\n\n"
             + (
                 "Select EXACTLY ONE winning plan — the one with the strongest evidence-backed arguments "
@@ -740,61 +741,9 @@ class JudgeService:
         current_rounds = len(run.debate_rounds)
         if current_rounds >= len(ROUND_SEQUENCE):
             return RoundType.TARGETED_REVISION
-        return RoundType(ROUND_SEQUENCE[current_rounds])
-
-    def _coerce_round_type(self, value: object, fallback: RoundType) -> RoundType:
-        """Normalize provider-supplied round labels into the supported enum."""
-        normalized = str(value or "").strip().lower()
-        if not normalized:
-            return fallback
-
-        candidates = [
-            normalized,
-            normalized.replace("-", "_").replace(" ", "_"),
-        ]
-        for candidate in list(candidates):
-            if candidate.endswith("_round"):
-                candidates.append(candidate[: -len("_round")])
-            if candidate.startswith("round_"):
-                candidates.append(candidate[len("round_") :])
-
-        alias_map = {
-            "critique": RoundType.CRITIQUE,
-            "opening": RoundType.CRITIQUE,
-            "initial_critique": RoundType.CRITIQUE,
-            "evidence_gathering": RoundType.CRITIQUE,
-            "initial_evidence_gathering": RoundType.CRITIQUE,
-            "initial_fact_gathering": RoundType.CRITIQUE,
-            "rebuttal": RoundType.REBUTTAL,
-            "rebut": RoundType.REBUTTAL,
-            "response": RoundType.REBUTTAL,
-            "synthesis": RoundType.SYNTHESIS,
-            "synthesize": RoundType.SYNTHESIS,
-            "merge": RoundType.SYNTHESIS,
-            "final_comparison": RoundType.FINAL_COMPARISON,
-            "comparison": RoundType.FINAL_COMPARISON,
-            "final": RoundType.FINAL_COMPARISON,
-            "targeted_revision": RoundType.TARGETED_REVISION,
-            "revision": RoundType.TARGETED_REVISION,
-            "targeted_fix": RoundType.TARGETED_REVISION,
-            "focused_revision": RoundType.TARGETED_REVISION,
-        }
-        for candidate in candidates:
-            resolved = alias_map.get(candidate)
-            if resolved is not None:
-                return resolved
-
-        if "rebut" in normalized or "respond" in normalized:
-            return RoundType.REBUTTAL
-        if "synth" in normalized or "merge" in normalized:
-            return RoundType.SYNTHESIS
-        if "compar" in normalized or normalized == "final":
-            return RoundType.FINAL_COMPARISON
-        if "revision" in normalized or "revise" in normalized:
-            return RoundType.TARGETED_REVISION
-        if "critique" in normalized or "evidence" in normalized or "gather" in normalized:
-            return RoundType.CRITIQUE
-        return fallback
+        return RoundType.coerce(
+            ROUND_SEQUENCE[current_rounds], fallback=RoundType.TARGETED_REVISION
+        )
 
     def _focus_areas(self, run: ExperimentRun) -> list[str]:
         if (

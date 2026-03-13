@@ -19,9 +19,11 @@ from colosseum.core.models import (
     TaskSpec,
     UsageMetrics,
 )
+from colosseum.providers.base import ProviderResult
 from colosseum.services.budget import BudgetManager
 from colosseum.services.judge import JudgeService
 from colosseum.services.normalizers import ResponseNormalizer
+from colosseum.services.provider_runtime import ProviderExecution
 from colosseum.services.provider_runtime import ProviderRuntimeService
 
 
@@ -339,6 +341,47 @@ def test_ai_judge_finalize_is_deferred_until_last_round(tmp_path, monkeypatch):
 
     assert decision.action.value == "continue_debate"
     assert "Early finalization is disabled" in decision.reasoning
+
+
+def test_ai_judge_invalid_next_round_type_falls_back_to_supported_round(tmp_path, monkeypatch):
+    judge = build_judge(tmp_path)
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="AI judge fallback", problem_statement="Use a safe round type."),
+        agents=[],
+        judge=JudgeConfig(
+            mode=JudgeMode.AI,
+            provider=ProviderConfig(type=ProviderType.MOCK, model="mock-judge"),
+        ),
+        plans=[
+            PlanDocument(agent_id="a", display_name="Plan A", summary="Plan A"),
+            PlanDocument(agent_id="b", display_name="Plan B", summary="Plan B"),
+        ],
+    )
+
+    async def fake_execute(**kwargs):
+        return ProviderExecution(
+            result=ProviderResult(
+                content="Judge response",
+                json_payload={
+                    "action": "continue_debate",
+                    "reasoning": "A bounded next round is still useful.",
+                    "confidence": 0.73,
+                    "disagreement_level": 0.51,
+                    "expected_value_of_next_round": 0.24,
+                    "next_round_type": "initial_evidence_gathering",
+                    "focus_areas": ["grounded disagreement"],
+                },
+            ),
+            effective_provider=kwargs["provider_config"],
+        )
+
+    monkeypatch.setattr(judge.provider_runtime, "execute", fake_execute)
+
+    decision = asyncio.run(judge._ai_decide(run))
+
+    assert decision.action == JudgeActionType.CONTINUE_DEBATE
+    assert decision.next_round_type == RoundType.CRITIQUE
 
 
 def test_build_evidence_policy_changes_with_search_toggle():

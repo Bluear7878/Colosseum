@@ -360,6 +360,7 @@ class JudgeService:
         suggested_round = self._next_round_type(run)
         suggested_agenda = self._select_agenda(run, suggested_round)
         image_inputs = self._image_inputs(run)
+        allowed_round_types = ", ".join(round_type.value for round_type in RoundType)
         judge_instructions = (
             f"You are judging a structured evidence-first debate on: '{run.task.title}'. "
             f"Problem: {run.task.problem_statement}. "
@@ -375,7 +376,8 @@ class JudgeService:
             "or technical details in their arguments are actually grounded in the frozen context bundle. "
             "Flag any agent that states precise claims (e.g., specific percentages, library names, "
             "architectural specifics) without citing a source from the context — these are likely hallucinated. "
-            "Lower that agent's credibility and note the concern in your reasoning."
+            "Lower that agent's credibility and note the concern in your reasoning. "
+            f"If you return next_round_type, it must be exactly one of: {allowed_round_types}."
         )
         if not run.judge.use_evidence_based_judging:
             judge_instructions += (
@@ -433,7 +435,10 @@ class JudgeService:
                 payload.get("disagreement_level", self._disagreement_level(run))
             ),
             expected_value_of_next_round=float(payload.get("expected_value_of_next_round", 0.2)),
-            next_round_type=RoundType(payload["next_round_type"])
+            next_round_type=self._coerce_round_type(
+                payload.get("next_round_type"),
+                fallback=suggested_round,
+            )
             if payload.get("next_round_type")
             else None,
             focus_areas=[str(item) for item in payload.get("focus_areas", [])]
@@ -735,6 +740,60 @@ class JudgeService:
         if current_rounds >= len(ROUND_SEQUENCE):
             return RoundType.TARGETED_REVISION
         return RoundType(ROUND_SEQUENCE[current_rounds])
+
+    def _coerce_round_type(self, value: object, fallback: RoundType) -> RoundType:
+        """Normalize provider-supplied round labels into the supported enum."""
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return fallback
+
+        candidates = [
+            normalized,
+            normalized.replace("-", "_").replace(" ", "_"),
+        ]
+        for candidate in list(candidates):
+            if candidate.endswith("_round"):
+                candidates.append(candidate[: -len("_round")])
+            if candidate.startswith("round_"):
+                candidates.append(candidate[len("round_") :])
+
+        alias_map = {
+            "critique": RoundType.CRITIQUE,
+            "opening": RoundType.CRITIQUE,
+            "initial_critique": RoundType.CRITIQUE,
+            "evidence_gathering": RoundType.CRITIQUE,
+            "initial_evidence_gathering": RoundType.CRITIQUE,
+            "initial_fact_gathering": RoundType.CRITIQUE,
+            "rebuttal": RoundType.REBUTTAL,
+            "rebut": RoundType.REBUTTAL,
+            "response": RoundType.REBUTTAL,
+            "synthesis": RoundType.SYNTHESIS,
+            "synthesize": RoundType.SYNTHESIS,
+            "merge": RoundType.SYNTHESIS,
+            "final_comparison": RoundType.FINAL_COMPARISON,
+            "comparison": RoundType.FINAL_COMPARISON,
+            "final": RoundType.FINAL_COMPARISON,
+            "targeted_revision": RoundType.TARGETED_REVISION,
+            "revision": RoundType.TARGETED_REVISION,
+            "targeted_fix": RoundType.TARGETED_REVISION,
+            "focused_revision": RoundType.TARGETED_REVISION,
+        }
+        for candidate in candidates:
+            resolved = alias_map.get(candidate)
+            if resolved is not None:
+                return resolved
+
+        if "rebut" in normalized or "respond" in normalized:
+            return RoundType.REBUTTAL
+        if "synth" in normalized or "merge" in normalized:
+            return RoundType.SYNTHESIS
+        if "compar" in normalized or normalized == "final":
+            return RoundType.FINAL_COMPARISON
+        if "revision" in normalized or "revise" in normalized:
+            return RoundType.TARGETED_REVISION
+        if "critique" in normalized or "evidence" in normalized or "gather" in normalized:
+            return RoundType.CRITIQUE
+        return fallback
 
     def _focus_areas(self, run: ExperimentRun) -> list[str]:
         if (

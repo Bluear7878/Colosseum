@@ -110,9 +110,13 @@ def build_prompt(data: dict) -> str:
     elif operation == "judge":
         prompt += "action (continue_debate|finalize|request_revision), confidence (float), "
         prompt += "reasoning, disagreement_level (float), expected_value_of_next_round (float), "
-        prompt += "next_round_type, focus_areas (list)"
+        prompt += (
+            "next_round_type (critique|rebuttal|synthesis|final_comparison|targeted_revision), "
+            "focus_areas (list)"
+        )
         prompt += "\n\nIMPORTANT: Your focus_areas and reasoning must be directly tied to the debate topic. "
-        prompt += "Only continue the debate if agents are producing new, topic-relevant evidence."
+        prompt += "Only continue the debate if agents are producing new, topic-relevant evidence. "
+        prompt += "Do not invent new round labels."
     elif operation in ("synthesis", "report_synthesis"):
         prompt += "summary, evidence_basis (list), assumptions (list), architecture (list), implementation_strategy (list), "
         prompt += (

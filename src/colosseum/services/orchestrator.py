@@ -215,6 +215,7 @@ class ColosseumOrchestrator:
                     has_image_inputs=bool(image_inputs),
                 )
             )
+        planning_timeout = run.budget_policy.planning_timeout_seconds
         results = await asyncio.gather(
             *[
                 self.provider_runtime.execute(
@@ -224,6 +225,7 @@ class ColosseumOrchestrator:
                     provider_config=agent.provider,
                     operation="plan",
                     instructions=prompt,
+                    timeout_override=planning_timeout,
                     metadata={
                         "run_id": run.run_id,
                         "agent_id": agent.agent_id,
@@ -278,6 +280,7 @@ class ColosseumOrchestrator:
                     provider_config=a.provider,
                     operation="plan",
                     instructions=p,
+                    timeout_override=run.budget_policy.planning_timeout_seconds,
                     metadata={
                         "run_id": run.run_id,
                         "agent_id": a.agent_id,

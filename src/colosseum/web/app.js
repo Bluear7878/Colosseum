@@ -847,11 +847,11 @@ var DEPTH_LABELS = {
   5: "Deep Dive"
 };
 var DEPTH_PROFILES = {
-  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55 },
-  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65 },
-  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78 },
-  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85 },
-  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92 }
+  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55, planning_timeout: 240, round_timeout: 180 },
+  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65, planning_timeout: 300, round_timeout: 240 },
+  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78, planning_timeout: 360, round_timeout: 300 },
+  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85, planning_timeout: 420, round_timeout: 360 },
+  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92, planning_timeout: 480, round_timeout: 420 }
 };
 depthSlider.addEventListener("input", function() {
   var v = parseInt(depthSlider.value);
@@ -1585,7 +1585,11 @@ function buildPayload() {
       per_round_token_limit: 12000,
       per_agent_message_limit: 1,
       min_novelty_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).min_novelty,
-      convergence_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).convergence
+      convergence_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).convergence,
+      planning_timeout_seconds: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).planning_timeout,
+      round_timeout_seconds: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).round_timeout,
+      late_round_timeout_factor: 0.8,
+      min_round_timeout_seconds: 120
     }
   };
 }
@@ -1747,11 +1751,13 @@ function handleSSEEvent(evt) {
     var log = document.getElementById("live-log");
     var sep = document.createElement("div");
     sep.className = "round-separator";
+    var timeoutLabel = evt.timeout_seconds ? " · timeout " + Math.floor(evt.timeout_seconds / 60) + "m" + (evt.timeout_seconds % 60 ? evt.timeout_seconds % 60 + "s" : "") : "";
     sep.innerHTML = '<span class="round-sep-line"></span><span class="round-sep-label">Round ' +
-      (evt.round_index || "?") + ': ' + esc(evt.round_type || "debate") + '</span><span class="round-sep-line"></span>';
+      (evt.round_index || "?") + ': ' + esc(evt.round_type || "debate") + timeoutLabel + '</span><span class="round-sep-line"></span>';
     log.appendChild(sep);
     setBattleNote(
-      "Debate round " + (evt.round_index || "") + " in progress on '" + (evt.agenda_title || evt.round_type || "the current issue") + "'.",
+      "Debate round " + (evt.round_index || "") + " in progress on '" + (evt.agenda_title || evt.round_type || "the current issue") + "'." +
+      (evt.timeout_seconds ? " (timeout: " + Math.floor(evt.timeout_seconds / 60) + "m)" : ""),
       true
     );
   } else if (phase === "agent_thinking") {

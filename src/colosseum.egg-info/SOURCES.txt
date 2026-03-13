@@ -38,6 +38,8 @@ src/colosseum/services/provider_runtime.py
 src/colosseum/services/repository.py
 src/colosseum/web/app.js
 src/colosseum/web/index.html
+src/colosseum/web/report.html
+src/colosseum/web/report.js
 src/colosseum/web/styles.css
 tests/test_evidence_policy.py
 tests/test_monitor.py

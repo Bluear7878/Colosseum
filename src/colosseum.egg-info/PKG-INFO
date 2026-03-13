@@ -32,7 +32,7 @@ It is designed for real workflows, not just demos:
 - Evidence-first prompting and judge logic
 - Automated judge mode, AI judge mode, and human-judge pause/resume flow
 - Local artifact persistence under `.colosseum/runs/`
-- Web UI for run creation, live streaming, plan comparison, debate review, verdict review, personas, and custom models
+- Web UI for run creation, live streaming, and a separate battle report screen with round-by-round judge agendas, adopted arguments, and final verdict review
 - CLI for setup, serving the app, running debates, listing models, inspecting runs, and viewing history
 - Manual paid-plan quota tracking with stop, wait, or switch-to-free fallback behavior
 - Persona generation from a short profile survey plus custom persona save/load
@@ -92,10 +92,13 @@ The UI supports:
 
 - live streaming mode through `POST /runs/stream`
 - results-only mode through `POST /runs`
+- automatic handoff to a dedicated report page at `/reports/{run_id}`
 - persona generation and assignment
 - paid quota tracking
 - custom model registration
 - image attachment uploads for shared VLM context
+- AI judge model selection from the setup screen using any available built-in or custom model
+- human judge actions from the report screen when a run is paused for review
 
 ### CLI
 
@@ -158,10 +161,11 @@ curl -N -X POST http://127.0.0.1:8000/runs/stream \
 2. Context bundle freeze
 3. Independent plan generation
 4. Initial plan scoring
-5. Judge decision
-6. Debate rounds if needed
-7. Final verdict or merged synthesis
-8. Artifact persistence
+5. Judge chooses the next bounded issue or finalizes immediately
+6. Agents answer that issue, rebut each other, concede valid points, and suggest hybrids
+7. Judge adopts the strongest arguments from the round and either moves to the next issue or stops
+8. Final verdict or merged synthesis
+9. Artifact persistence and report rendering
 
 The orchestrator uses bounded debate rather than open-ended chat. The judge can stop early if plans are already well separated, if novelty collapses, or if budget pressure is too high.
 
@@ -186,7 +190,15 @@ Important behavior:
 
 ### Debate protocol
 
-The default round sequence is:
+Each round is agenda-driven rather than open-ended:
+
+1. the judge selects one concrete issue
+2. every agent answers that issue from its own plan
+3. agents must rebut or accept specific peer arguments
+4. the judge adopts the strongest evidence-backed arguments
+5. the judge either advances to the next issue or stops
+
+The default round types are still:
 
 1. `critique`
 2. `rebuttal`
@@ -194,19 +206,26 @@ The default round sequence is:
 4. `final_comparison`
 5. `targeted_revision` when needed
 
-Each round is bounded. Later rounds use summary memory instead of replaying full transcripts.
+Each round is bounded. Later rounds use summary memory instead of replaying full transcripts, but the report preserves the per-round agenda, messages, adopted arguments, and resolution.
 
 ### Judge modes
 
 - `automated`: heuristic judge with budget, novelty, convergence, and evidence checks
-- `ai`: provider-backed judge using the same provider abstraction
-- `human`: pause after planning or after requested rounds and wait for explicit human action
+- `ai`: provider-backed judge using the same provider abstraction; the web UI lets you choose the exact judge model separately from the debating agents
+- `human`: pause after planning or after requested rounds and wait for explicit human action from the battle report screen
 
 The final verdict can be:
 
 - one winning plan
 - a merged plan
 - a targeted revision request
+
+Every debate round now records:
+
+- the judge's agenda title and question
+- all agent messages for that round
+- which arguments were adopted by the judge
+- the round resolution and what stayed unresolved
 
 ## Evidence-first behavior
 
@@ -314,6 +333,7 @@ A run directory includes:
 - per-round debate JSON artifacts
 - judge trace and verdict JSON
 - optional human judge packet
+- report-ready agenda/adjudication data embedded in each debate round
 
 This makes runs easy to inspect, diff, and recover after UI stream interruptions.
 
@@ -333,6 +353,11 @@ Main endpoints:
 - `GET /provider-quotas`
 - `PUT /provider-quotas`
 - persona endpoints under `/personas`
+
+Main UI routes:
+
+- `GET /` for the arena / run setup screen
+- `GET /reports/{run_id}` for the dedicated battle report screen
 
 ## Repository layout
 

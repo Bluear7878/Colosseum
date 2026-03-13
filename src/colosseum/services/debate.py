@@ -46,6 +46,7 @@ class DebateEngine:
         plan_map = {plan.agent_id: plan for plan in run.plans}
         image_inputs = self._image_inputs(run)
         image_summary = self._image_summary(run)
+        round_timeout = run.budget_policy.timeout_for_round(round_index)
         tasks = []
         for agent in run.agents:
             plan = plan_map[agent.agent_id]
@@ -66,6 +67,7 @@ class DebateEngine:
                     provider_config=agent.provider,
                     operation="debate",
                     instructions=prompt,
+                    timeout_override=round_timeout,
                     metadata={
                         "run_id": run.run_id,
                         "agent_id": agent.agent_id,
@@ -132,6 +134,7 @@ class DebateEngine:
     ):
         """Yields (event_type, data) tuples as agents complete."""
         round_index = len(run.debate_rounds) + 1
+        round_timeout = run.budget_policy.timeout_for_round(round_index)
         plan_map = {plan.agent_id: plan for plan in run.plans}
         image_inputs = self._image_inputs(run)
         image_summary = self._image_summary(run)
@@ -158,6 +161,7 @@ class DebateEngine:
                     provider_config=a.provider,
                     operation="debate",
                     instructions=p,
+                    timeout_override=round_timeout,
                     metadata={
                         "run_id": run.run_id,
                         "agent_id": a.agent_id,

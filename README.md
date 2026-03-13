@@ -1,398 +1,315 @@
-# Colosseum
+<div align="center">
 
-Colosseum is a local-first orchestration platform for running the same task through multiple model agents, freezing a shared context bundle, generating independent plans, running a bounded evidence-first debate, and producing a final judge-backed result with traceable artifacts.
+# ⚔️ Colosseum
 
-It is designed for real workflows, not just demos:
+**Multi-Agent Debate Arena — Let AI Models Fight It Out**
 
-- compare multiple planning approaches side by side
-- keep every agent on the same frozen input package
-- control cost and stop debate early when it stops adding value
-- support automated judging, AI judging, or a human user as judge
-- preserve the full artifact trail for later inspection
+*Run the same task through multiple model agents, freeze a shared context bundle,*
+*generate independent plans, run an evidence-first debate, and produce a judge-backed verdict.*
 
-## What is implemented
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
-- Frozen context bundles for inline text, local files, local directories, URL references, and image inputs
-- Independent comparable plan generation before any agent sees another plan
-- Structured debate rounds with critique, rebuttal, synthesis, final comparison, and targeted revision
-- Evidence-first prompting and judge logic
-- Automated judge mode, AI judge mode, and human-judge pause/resume flow
-- Local artifact persistence under `.colosseum/runs/`
-- Web UI for run creation, live streaming, and a separate battle report screen with round-by-round judge agendas, adopted arguments, and final verdict review
-- CLI for setup, serving the app, running debates, listing models, inspecting runs, and viewing history
-- Manual paid-plan quota tracking with stop, wait, or switch-to-free fallback behavior
-- Persona generation from a short profile survey plus custom persona save/load
-- Customer-owned custom model registration
-- Shared image/VLM context support through the frozen bundle and provider input package
+---
 
-## Core principles
+🏛️ **Fair** · 🔍 **Traceable** · 💰 **Cost-Controlled** · 📊 **Evidence-First** · 🔌 **Extensible**
 
-- Fairness: every agent gets the same frozen context bundle
-- Traceability: runs, plans, debate rounds, judge decisions, and verdicts are saved as artifacts
-- Cost control: bounded rounds, novelty checks, convergence checks, and total budget limits
-- Evidence first: claims should be grounded in the frozen bundle, explicit evidence, or clearly labeled inference
-- Extensibility: provider logic is isolated behind a shared contract
+</div>
 
-## Installation
+<br>
 
-Python 3.11+ is required.
+## 🎯 Why Colosseum?
 
-Install the project in editable mode:
+> Not just another chatbot UI — Colosseum is a **structured debate platform** designed for real workflows.
+
+| Problem | Colosseum's Answer |
+|---|---|
+| "Which model gives a better plan?" | Run them side by side on the **same frozen context** |
+| "How do I compare fairly?" | Independent plan generation — no agent sees another's plan first |
+| "Debates go in circles forever" | Bounded rounds with **novelty checks**, convergence detection, and budget limits |
+| "I can't trace how a decision was made" | Full artifact trail: plans, rounds, judge agendas, adopted arguments, verdicts |
+| "I want control over judging" | Choose **automated**, **AI judge**, or **human judge** mode |
+
+---
+
+## ✨ Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🧊 Frozen Context Bundles
+Every agent gets the exact same input — text, files, directories, URLs, and images — frozen before planning begins.
+
+### 🤖 Multi-Provider Support
+Claude · Codex · Gemini · Ollama · Custom CLIs
+Mix and match providers in the same debate.
+
+### 🎭 Persona System
+Generate personas from surveys, write custom ones, or use builtins. Attach different personas to different agents.
+
+</td>
+<td width="50%" valign="top">
+
+### ⚖️ Three Judge Modes
+**Automated** heuristic judge, **AI-powered** judge (any model), or **human** judge with pause/resume flow.
+
+### 📈 Evidence-First Debate
+Claims must be grounded. Unsupported assertions are penalized. The judge tracks evidence quality per round.
+
+### 💎 Executive Reports
+AI-synthesized final reports with key conclusions, verdict explanations, debate highlights, and recommendations.
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🚀 Quickstart
+
+### Installation
 
 ```bash
+# Install in editable mode
 python -m pip install -e .
-```
 
-For development tools:
-
-```bash
+# With dev tools
 python -m pip install -e '.[dev]'
 ```
 
-Optional provider prerequisites:
-
-- `claude` CLI if you want Anthropic CLI-backed runs
-- `codex` CLI if you want OpenAI Codex CLI-backed runs
-- `gemini` CLI if you want Gemini CLI-backed runs
-- `ollama` if you want local Ollama-backed runs
-
-The web UI can help detect or install some of these tools locally through the setup endpoints.
-
-## Quickstart
-
-### Web UI
-
-Start the app:
-
-```bash
-PYTHONPATH=src uvicorn colosseum.main:app --reload
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000/
-```
-
-The UI supports:
-
-- live streaming mode through `POST /runs/stream`
-- results-only mode through `POST /runs`
-- automatic handoff to a dedicated report page at `/reports/{run_id}`
-- persona generation and assignment
-- paid quota tracking
-- custom model registration
-- image attachment uploads for shared VLM context
-- internet-search encouragement toggle to reduce memory-only answers when providers support browsing
-- AI judge model selection from the setup screen using any available built-in or custom model
-- GitHub star encouragement card in the setup screen
-- human judge actions from the report screen when a run is paused for review
-
-### CLI
-
-You can also use the packaged CLI:
+### Launch the Web UI
 
 ```bash
 colosseum serve
-colosseum models
-colosseum personas
-colosseum history
 ```
 
-Run a quick mock debate:
+Open **http://127.0.0.1:8000/** and you're ready to go.
+
+### Run from CLI
 
 ```bash
-colosseum debate --topic "Should we refactor the provider layer now?" --mock --depth 1
-```
+# Quick mock debate
+colosseum debate --topic "Should we refactor the provider layer?" --mock --depth 1
 
-Run a manual model mix:
-
-```bash
+# Real multi-model debate
 colosseum debate \
   --topic "Best migration strategy for a vendor-neutral provider layer" \
   -g claude:claude-sonnet-4-6 codex:o3 ollama:llama3.3
-```
 
-Inspect a past run:
-
-```bash
+# Inspect a past run
 colosseum show <run_id>
 ```
 
-### API
-
-Create a run:
+<details>
+<summary><b>📡 API Usage</b></summary>
 
 ```bash
+# Create a run
 curl -X POST http://127.0.0.1:8000/runs \
   -H 'content-type: application/json' \
   -d @examples/demo_run.json
-```
 
-Fetch a run:
-
-```bash
+# Fetch a run
 curl http://127.0.0.1:8000/runs/<run_id>
-```
 
-Stream a live run:
-
-```bash
+# Stream a live run
 curl -N -X POST http://127.0.0.1:8000/runs/stream \
   -H 'content-type: application/json' \
   -d @examples/demo_run.json
 ```
 
-## How a run works
+</details>
 
-1. Task intake
-2. Context bundle freeze
-3. Independent plan generation
-4. Initial plan scoring
-5. Judge chooses the next bounded issue or finalizes immediately
-6. Agents answer that issue, rebut each other, concede valid points, and suggest hybrids
-7. Judge adopts the strongest arguments from the round and either moves to the next issue or stops
-8. Final verdict or merged synthesis
-9. Artifact persistence and report rendering
+---
 
-The orchestrator uses bounded debate rather than open-ended chat. The judge can stop early if plans are already well separated, if novelty collapses, or if budget pressure is too high.
+## 🏗️ How a Run Works
 
-## Context bundle support
-
-The current implementation supports these source kinds:
-
-- `inline_text`
-- `local_file`
-- `local_directory`
-- `external_reference`
-- `inline_image`
-- `local_image`
-
-Important behavior:
-
-- large text bundles are clipped to a prompt budget before planning
-- external URLs are frozen as metadata only in the MVP
-- image bytes are preserved in the frozen bundle and provider input package, but are not dumped into text prompts
-
-## Debate and judging
-
-### Debate protocol
-
-Each round is agenda-driven rather than open-ended:
-
-1. the judge selects one concrete issue
-2. every agent answers that issue from its own plan
-3. agents must rebut or accept specific peer arguments
-4. the judge adopts the strongest evidence-backed arguments
-5. the judge either advances to the next issue or stops
-
-The default round types are still:
-
-1. `critique`
-2. `rebuttal`
-3. `synthesis`
-4. `final_comparison`
-5. `targeted_revision` when needed
-
-Each round is bounded. Later rounds use summary memory instead of replaying full transcripts, but the report preserves the per-round agenda, messages, adopted arguments, and resolution.
-
-### Judge modes
-
-- `automated`: heuristic judge with budget, novelty, convergence, and evidence checks
-- `ai`: provider-backed judge using the same provider abstraction; the web UI lets you choose the exact judge model separately from the debating agents
-- `human`: pause after planning or after requested rounds and wait for explicit human action from the battle report screen
-
-The final verdict can be:
-
-- one winning plan
-- a merged plan
-- a targeted revision request
-
-Every debate round now records:
-
-- the judge's agenda title and question
-- all agent messages for that round
-- which arguments were adopted by the judge
-- the round resolution and what stayed unresolved
-
-## Evidence-first behavior
-
-Colosseum is opinionated here:
-
-- plans are expected to include `evidence_basis`
-- debate claims are expected to include evidence lists
-- unsupported claims are lower-value than source-backed claims
-- the web UI can encourage internet search when provider tooling supports it; if browsing is unavailable, agents are instructed to say so instead of guessing
-- if evidence is weak, the automated judge is less willing to finalize early
-- if a model cannot inspect an image or missing source directly, it should say so instead of fabricating certainty
-
-## Personas and custom models
-
-### Personas
-
-You can:
-
-- list builtin and saved personas
-- generate a persona from a short profile survey
-- write custom personas
-- save them for later reuse
-- attach different personas to different agents
-
-Relevant endpoints:
-
-- `GET /personas`
-- `POST /personas/generate`
-- `GET /personas/{persona_id}`
-- `POST /personas`
-- `DELETE /personas/{persona_id}`
-
-### Custom models
-
-The UI supports bring-your-own-model registration for:
-
-- custom CLI commands
-- custom Ollama models
-- custom local HF/Ollama-style entries
-
-Custom models can be marked as free or paid, tied into the same persona flow, and participate in the same debate process as builtin agents.
-
-## Paid quota tracking
-
-Quota tracking is local to the Colosseum workspace and is currently manual.
-
-Supported behavior:
-
-- disable exhausted paid models before launch
-- stop a run when paid quota is exhausted
-- wait for the next reset window
-- switch to a configured free fallback model
-
-Relevant endpoints:
-
-- `GET /provider-quotas`
-- `PUT /provider-quotas`
-
-State is stored under `.colosseum/state/provider_quotas.json`.
-
-## VLM and image support
-
-Colosseum can freeze shared image context so multiple agents debate over the same visual input.
-
-What works now:
-
-- image upload from the web UI
-- `inline_image` and `local_image` bundle freezing
-- shared image manifests in prompts
-- full image payloads in the provider input package
-- image-aware custom CLIs can consume `metadata.image_inputs` from `COLOSSEUM_INPUT_PATH`
-
-Current limitation:
-
-- builtin CLI wrappers currently receive a compact image manifest in text prompts
-- truly native multimodal attachment handling is strongest today through image-aware custom command providers
-
-## Providers
-
-Current provider implementations:
-
-- `mock`: deterministic structured outputs for tests and demos
-- `command`: subprocess-backed provider for custom CLIs and wrappers
-- vendor CLI-backed wrappers built on top of `command` for Claude, Codex, Gemini, and local model shells
-
-The orchestration layer is provider-neutral. Adding a new vendor should not require changing debate or judge logic.
-
-## Artifacts and storage
-
-Run artifacts are stored in:
-
-```text
-.colosseum/runs/
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  📋 Task    │───▶│  🧊 Freeze  │───▶│  📝 Plan    │───▶│  ⭐ Score   │
+│  Intake     │    │  Context    │    │  Generation │    │  Plans     │
+└─────────────┘    └─────────────┘    └─────────────┘    └──────┬──────┘
+                                                                │
+         ┌──────────────────────────────────────────────────────┘
+         ▼
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  🎯 Judge   │───▶│  💬 Debate  │───▶│  ⚖️ Adopt   │───▶│  🏆 Verdict │
+│  Agenda     │    │  Round      │    │  Arguments  │    │  & Report  │
+└──────┬──────┘    └─────────────┘    └─────────────┘    └─────────────┘
+       │                                      │
+       └──────── 🔄 Next issue ◀──────────────┘
 ```
 
-State files are stored in:
+The orchestrator uses **bounded debate** rather than open-ended chat. The judge can stop early if plans are already well separated, if novelty collapses, or if budget pressure is too high.
 
-```text
-.colosseum/state/
+---
+
+## ⚖️ Debate Protocol
+
+Each round is **agenda-driven**, not open-ended:
+
+| Step | Description |
+|:---:|---|
+| **1** | Judge selects one concrete issue |
+| **2** | Every agent answers from its own plan |
+| **3** | Agents must rebut or accept specific peer arguments |
+| **4** | Judge adopts the strongest evidence-backed arguments |
+| **5** | Judge either advances to the next issue or finalizes |
+
+### Default Round Types
+
+`critique` → `rebuttal` → `synthesis` → `final_comparison` → `targeted_revision`
+
+Each round records: the judge's agenda, all agent messages, adopted arguments, and what remained unresolved.
+
+### Judge Modes
+
+| Mode | Description |
+|---|---|
+| 🤖 **Automated** | Heuristic judge with budget, novelty, convergence, and evidence checks |
+| 🧠 **AI** | Provider-backed judge — choose any available model as the judge |
+| 👤 **Human** | Pause after planning or after rounds; wait for explicit human action |
+
+### Verdict Options
+
+The final verdict can be: **one winning plan**, a **merged plan**, or a **targeted revision** request.
+
+---
+
+## 🧊 Context Bundle Support
+
+| Source Kind | Description |
+|---|---|
+| `inline_text` | Raw text passed directly |
+| `local_file` | Single file from disk |
+| `local_directory` | Entire directory snapshot |
+| `external_reference` | URL frozen as metadata |
+| `inline_image` | Base64-encoded image data |
+| `local_image` | Image file from disk |
+
+> Large text bundles are clipped to a prompt budget. Image bytes are preserved in the frozen bundle and provider input package but not dumped into text prompts.
+
+---
+
+## 🔌 Provider Support
+
+| Provider | Type | Notes |
+|---|---|---|
+| **Claude** | CLI wrapper | Requires `claude` CLI |
+| **Codex** | CLI wrapper | Requires `codex` CLI |
+| **Gemini** | CLI wrapper | Requires `gemini` CLI |
+| **Ollama** | Local | Requires `ollama` daemon |
+| **Mock** | Built-in | Deterministic outputs for tests |
+| **Custom** | CLI command | Bring your own model/command |
+
+Custom models can be marked as free or paid, tied into the persona flow, and participate in the same debate process as builtin agents.
+
+---
+
+<details>
+<summary><h2>🗂️ API Reference</h2></summary>
+
+### Core Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Health check |
+| `GET` | `/setup/status` | Setup status |
+| `POST` | `/setup/install/{tool}` | Install a provider tool |
+| `GET` | `/models` | List available models |
+| `POST` | `/runs` | Create a run (blocking) |
+| `POST` | `/runs/stream` | Create a run (streaming) |
+| `GET` | `/runs` | List all runs |
+| `GET` | `/runs/{run_id}` | Get run details |
+| `POST` | `/runs/{run_id}/judge-actions` | Submit judge action |
+| `GET` | `/runs/{run_id}/report/pdf` | Download PDF report |
+
+### Persona Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/personas` | List all personas |
+| `POST` | `/personas` | Create custom persona |
+| `POST` | `/personas/generate` | Generate from survey |
+| `GET` | `/personas/{id}` | Get persona details |
+| `DELETE` | `/personas/{id}` | Delete a persona |
+
+### Quota Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/provider-quotas` | Get quota status |
+| `PUT` | `/provider-quotas` | Update quotas |
+
+### UI Routes
+
+| Route | Description |
+|---|---|
+| `GET /` | Arena / run setup screen |
+| `GET /reports/{run_id}` | Battle report screen |
+
+</details>
+
+---
+
+<details>
+<summary><h2>📂 Repository Layout</h2></summary>
+
 ```
-
-A run directory includes:
-
-- `run.json`
-- per-plan JSON artifacts
-- per-round debate JSON artifacts
-- judge trace and verdict JSON
-- optional human judge packet
-- report-ready agenda/adjudication data embedded in each debate round
-
-This makes runs easy to inspect, diff, and recover after UI stream interruptions.
-
-## API overview
-
-Main endpoints:
-
-- `GET /health`
-- `GET /setup/status`
-- `GET /models`
-- `POST /setup/install/{tool_name}`
-- `POST /runs`
-- `POST /runs/stream`
-- `GET /runs`
-- `GET /runs/{run_id}`
-- `POST /runs/{run_id}/judge-actions`
-- `GET /provider-quotas`
-- `PUT /provider-quotas`
-- persona endpoints under `/personas`
-
-Main UI routes:
-
-- `GET /` for the arena / run setup screen
-- `GET /reports/{run_id}` for the dedicated battle report screen
-
-## Repository layout
-
-```text
 src/colosseum/
-  api/          FastAPI routes
-  core/         Typed schemas and config
-  personas/     Builtin and custom persona support
-  providers/    Provider abstraction and wrappers
-  services/     Orchestrator, judge, debate, context, repository
-  web/          Static web UI assets
+├── api/            # FastAPI routes
+├── core/           # Typed schemas and config
+├── personas/       # Builtin and custom persona support
+├── providers/      # Provider abstraction and wrappers
+├── services/       # Orchestrator, judge, debate, context, repository
+│   ├── debate.py
+│   ├── judge.py
+│   ├── orchestrator.py
+│   ├── pdf_report.py
+│   └── report_synthesizer.py
+└── web/            # Static web UI assets
+
 docs/
-  colosseum_spec.md
+└── colosseum_spec.md
+
 examples/
-  demo_run.json
+└── demo_run.json   # Mock-provider smoke test payload
+
 tests/
 ```
 
-## Testing
+</details>
 
-Run the test suite:
+---
+
+## 🧪 Testing
 
 ```bash
+# Run the full test suite
 PYTHONPATH=src PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q
-```
 
-Quick syntax validation:
-
-```bash
+# Quick syntax validation
 python -m compileall src tests
 ```
 
-## Known MVP limitations
+---
+
+## ⚠️ Known Limitations
 
 - URL sources are metadata-only unless fetched upstream before run creation
-- paid quota tracking is local/manual, not provider-synchronized
-- builtin vendor CLI wrappers are thinner than full SDK integrations
-- image-aware debates are best supported through custom command providers today
-- artifact persistence is file-based, not database-backed
+- Paid quota tracking is local/manual, not provider-synchronized
+- Builtin vendor CLI wrappers are thinner than full SDK integrations
+- Image-aware debates are best supported through custom command providers
+- Artifact persistence is file-based, not database-backed
 
-## Example input
+---
 
-See:
+<div align="center">
 
-```text
-examples/demo_run.json
-```
+**⚔️ Let the models fight. Let the evidence win. ⚔️**
 
-It contains a small mock-provider run payload you can use for a quick smoke test.
+*Built for people who want structured answers, not chat noise.*
+
+</div>

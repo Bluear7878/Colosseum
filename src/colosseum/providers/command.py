@@ -35,7 +35,7 @@ class CommandProvider(BaseProvider):
         model_name: str,
         command: list[str],
         env: dict[str, str] | None = None,
-        timeout_seconds: int = 180,
+        timeout_seconds: int | None = 180,
     ) -> None:
         self.model_name = model_name
         self.command = command

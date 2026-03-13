@@ -122,7 +122,7 @@ class ProviderConfig(BaseModel):
     model: str = "mock-default"
     command: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
-    timeout_seconds: int = 300
+    timeout_seconds: int | None = 300
     pricing: ProviderPricing = Field(default_factory=ProviderPricing)
     ollama_model: str | None = None  # only used when type=ollama
     hf_model: str | None = None  # only used when type=huggingface_local
@@ -381,10 +381,23 @@ class BudgetPolicy(BaseModel):
     round_timeout_seconds: int = 300
     late_round_timeout_factor: float = 0.8
     min_round_timeout_seconds: int = 120
+    per_round_timeouts: list[int] = Field(default_factory=list)
 
     def timeout_for_round(self, round_index: int) -> int:
-        """Return the timeout in seconds for a given debate round (1-based)."""
+        """Return the timeout in seconds for a given debate round (1-based).
+
+        Values in *per_round_timeouts* take precedence.  A stored value of
+        ``0`` means **no limit**.  When no explicit per-round value exists
+        the legacy decay formula is used; *round_timeout_seconds* of ``0``
+        also means no limit.
+        """
+        if self.per_round_timeouts and round_index <= len(self.per_round_timeouts):
+            return self.per_round_timeouts[round_index - 1]  # 0 = no limit
+        if self.round_timeout_seconds == 0:
+            return 0  # no limit
         t = self.round_timeout_seconds * (self.late_round_timeout_factor ** (round_index - 1))
+        if self.min_round_timeout_seconds == 0:
+            return int(t)
         return max(self.min_round_timeout_seconds, int(t))
 
 

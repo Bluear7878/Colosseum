@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from colosseum.core.models import (
+    AgentConfig,
     ExperimentRun,
     HumanJudgeActionRequest,
     JudgeActionType,
@@ -217,7 +218,7 @@ class ColosseumOrchestrator:
                     has_image_inputs=bool(image_inputs),
                 )
             )
-        planning_timeout = run.budget_policy.planning_timeout_seconds
+        planning_timeout = run.budget_policy.planning_timeout_seconds or 0
         results = await asyncio.gather(
             *[
                 self.provider_runtime.execute(
@@ -257,7 +258,11 @@ class ColosseumOrchestrator:
         self.repository.save_run(run)
 
     async def _generate_plans_streaming(self, run: ExperimentRun):
-        """Yields (event_type, data) tuples as each agent's plan completes."""
+        """Yields (event_type, data) tuples as each agent's plan completes.
+
+        Agents that fail (e.g. timeout) are removed from the run instead of
+        killing the entire experiment.
+        """
         if not run.context_bundle:
             raise ValueError("Context bundle must be frozen before generating plans.")
 
@@ -266,7 +271,7 @@ class ColosseumOrchestrator:
         image_inputs = self.context_service.extract_image_inputs(context_bundle)
         image_summary = self.context_service.summarize_image_inputs(context_bundle)
 
-        agent_tasks: dict[int, asyncio.Task] = {}
+        task_to_agent: dict[asyncio.Task, AgentConfig] = {}
         for agent in run.agents:
             prompt = self._build_plan_prompt(
                 run,
@@ -300,42 +305,48 @@ class ColosseumOrchestrator:
                 return a, execution.result
 
             task = asyncio.create_task(agent_plan())
-            agent_tasks[id(task)] = task
+            task_to_agent[task] = agent
             yield ("agent_planning", {"agent_id": agent.agent_id, "display_name": agent.display_name})
 
-        pending = list(agent_tasks.values())
-        try:
-            for coro in asyncio.as_completed(pending):
-                agent, result = await coro
-                plan = self.normalizer.normalize_plan(
-                    agent=agent,
-                    payload=result.json_payload,
-                    raw_content=result.content,
-                    usage=result.usage,
-                )
-                run.plans.append(plan)
-                run.budget_ledger.record(agent.agent_id, result.usage, round_index=0)
-                yield ("plan_ready", {
-                    "agent_id": agent.agent_id,
-                    "display_name": plan.display_name,
-                    "plan_id": plan.plan_id,
-                    "summary": plan.summary,
-                    "strengths": plan.strengths,
-                    "weaknesses": plan.weaknesses,
-                })
-        except Exception:
-            # Cancel remaining tasks to avoid "Task exception was never retrieved"
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-            # Suppress exceptions from cancelled tasks
-            for task in pending:
-                if task.done() and not task.cancelled():
-                    try:
-                        task.result()
-                    except Exception:
-                        pass
-            raise
+        pending: set[asyncio.Task] = set(task_to_agent.keys())
+        failed_agent_ids: list[str] = []
+
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                agent = task_to_agent[task]
+                try:
+                    _, result = task.result()
+                    plan = self.normalizer.normalize_plan(
+                        agent=agent,
+                        payload=result.json_payload,
+                        raw_content=result.content,
+                        usage=result.usage,
+                    )
+                    run.plans.append(plan)
+                    run.budget_ledger.record(agent.agent_id, result.usage, round_index=0)
+                    yield ("plan_ready", {
+                        "agent_id": agent.agent_id,
+                        "display_name": plan.display_name,
+                        "plan_id": plan.plan_id,
+                        "summary": plan.summary,
+                        "strengths": plan.strengths,
+                        "weaknesses": plan.weaknesses,
+                    })
+                except Exception as exc:
+                    failed_agent_ids.append(agent.agent_id)
+                    yield ("plan_failed", {
+                        "agent_id": agent.agent_id,
+                        "display_name": agent.display_name,
+                        "error": str(exc),
+                    })
+
+        # Remove failed agents from the run
+        if failed_agent_ids:
+            run.agents = [a for a in run.agents if a.agent_id not in failed_agent_ids]
+
+        if not run.agents:
+            raise RuntimeError("All agents failed during planning. Cannot continue.")
 
         self._touch(run)
         self.repository.save_run(run)

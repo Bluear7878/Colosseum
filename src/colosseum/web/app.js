@@ -853,6 +853,21 @@ document.getElementById("back-to-setup").addEventListener("click", function() {
   show("setup");
 });
 
+/* ── Skip round ── */
+var skipRoundBtn = document.getElementById("skip-round-btn");
+skipRoundBtn.addEventListener("click", function() {
+  if (!currentRunId) return;
+  skipRoundBtn.disabled = true;
+  skipRoundBtn.textContent = "Skipping...";
+  fetch("/api/runs/" + currentRunId + "/skip-round", { method: "POST" })
+    .then(function(res) { return res.json(); })
+    .catch(function() {})
+    .finally(function() {
+      skipRoundBtn.disabled = false;
+      skipRoundBtn.textContent = "Skip Round";
+    });
+});
+
 /* ── Depth slider ── */
 var depthSlider = document.getElementById("depth");
 var depthVal = document.getElementById("depth-val");
@@ -864,25 +879,81 @@ var DEPTH_LABELS = {
   5: "Deep Dive"
 };
 var DEPTH_PROFILES = {
-  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55, planning_timeout: 240, round_timeout: 180 },
-  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65, planning_timeout: 300, round_timeout: 240 },
-  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78, planning_timeout: 360, round_timeout: 300 },
-  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85, planning_timeout: 420, round_timeout: 360 },
-  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92, planning_timeout: 480, round_timeout: 420 }
+  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55, planning_timeout: 240, round_timeout: 180, decay: 0.80 },
+  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65, planning_timeout: 300, round_timeout: 240, decay: 0.80 },
+  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78, planning_timeout: 360, round_timeout: 300, decay: 0.80 },
+  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85, planning_timeout: 420, round_timeout: 360, decay: 0.80 },
+  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92, planning_timeout: 480, round_timeout: 420, decay: 0.80 }
 };
 var planningTimeoutInput = document.getElementById("planning-timeout");
-var roundTimeoutInput = document.getElementById("round-timeout");
-var timeoutDecayInput = document.getElementById("timeout-decay");
-var minTimeoutInput = document.getElementById("min-timeout");
+var planningNolimit = document.getElementById("planning-nolimit");
+var roundTimeoutContainer = document.getElementById("round-timeout-rows");
+
+/* Per-round timeout state */
+var roundTimeoutInputs = [];  // [{input, nolimit}]
+
+function buildRoundTimeoutRows(numRounds) {
+  roundTimeoutContainer.innerHTML = "";
+  roundTimeoutInputs = [];
+  var v = parseInt(depthSlider.value);
+  var profile = DEPTH_PROFILES[v] || DEPTH_PROFILES[3];
+  for (var i = 1; i <= numRounds; i++) {
+    var timeout = Math.max(60, Math.round(profile.round_timeout * Math.pow(profile.decay, i - 1)));
+    var row = document.createElement("div");
+    row.className = "timeout-row";
+    var label = document.createElement("span");
+    label.className = "timeout-label";
+    label.textContent = "Round " + i;
+    var wrap = document.createElement("div");
+    wrap.className = "timeout-input-wrap";
+    var inp = document.createElement("input");
+    inp.type = "number";
+    inp.min = "30";
+    inp.max = "3600";
+    inp.step = "30";
+    inp.value = timeout;
+    inp.className = "arena-input-sm timeout-input";
+    inp.id = "round-timeout-" + i;
+    var unit = document.createElement("span");
+    unit.className = "timeout-unit";
+    unit.textContent = "sec";
+    wrap.appendChild(inp);
+    wrap.appendChild(unit);
+    var nlLabel = document.createElement("label");
+    nlLabel.className = "timeout-nolimit-label";
+    var nlCheck = document.createElement("input");
+    nlCheck.type = "checkbox";
+    nlCheck.className = "timeout-nolimit";
+    nlCheck.id = "round-nolimit-" + i;
+    var nlSpan = document.createElement("span");
+    nlSpan.textContent = "No limit";
+    nlLabel.appendChild(nlCheck);
+    nlLabel.appendChild(nlSpan);
+    (function(input, check) {
+      check.addEventListener("change", function() {
+        input.disabled = check.checked;
+      });
+    })(inp, nlCheck);
+    row.appendChild(label);
+    row.appendChild(wrap);
+    row.appendChild(nlLabel);
+    roundTimeoutContainer.appendChild(row);
+    roundTimeoutInputs.push({ input: inp, nolimit: nlCheck });
+  }
+}
 
 function syncTimeoutDefaults() {
   var v = parseInt(depthSlider.value);
   var profile = DEPTH_PROFILES[v] || DEPTH_PROFILES[3];
   planningTimeoutInput.value = profile.planning_timeout;
-  roundTimeoutInput.value = profile.round_timeout;
-  timeoutDecayInput.value = "0.80";
-  minTimeoutInput.value = "120";
+  planningNolimit.checked = false;
+  planningTimeoutInput.disabled = false;
+  buildRoundTimeoutRows(v);
 }
+
+planningNolimit.addEventListener("change", function() {
+  planningTimeoutInput.disabled = planningNolimit.checked;
+});
 
 depthSlider.addEventListener("input", function() {
   var v = parseInt(depthSlider.value);
@@ -1642,18 +1713,25 @@ function buildPayload() {
       prefer_merged_plan_on_close_scores: true
     },
     paid_provider_policy: buildPaidProviderPolicy(),
-    budget_policy: {
-      max_rounds: depth,
-      total_token_budget: 80000,
-      per_round_token_limit: 12000,
-      per_agent_message_limit: 1,
-      min_novelty_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).min_novelty,
-      convergence_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).convergence,
-      planning_timeout_seconds: parseInt(planningTimeoutInput.value) || (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).planning_timeout,
-      round_timeout_seconds: parseInt(roundTimeoutInput.value) || (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).round_timeout,
-      late_round_timeout_factor: parseFloat(timeoutDecayInput.value) || 0.8,
-      min_round_timeout_seconds: parseInt(minTimeoutInput.value) || 120
-    }
+    budget_policy: (function() {
+      var planTimeout = planningNolimit.checked ? 0 : (parseInt(planningTimeoutInput.value) || (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).planning_timeout);
+      var perRound = roundTimeoutInputs.map(function(r) {
+        return r.nolimit.checked ? 0 : (parseInt(r.input.value) || 300);
+      });
+      return {
+        max_rounds: depth,
+        total_token_budget: 80000,
+        per_round_token_limit: 12000,
+        per_agent_message_limit: 1,
+        min_novelty_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).min_novelty,
+        convergence_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).convergence,
+        planning_timeout_seconds: planTimeout,
+        round_timeout_seconds: perRound[0] || 300,
+        late_round_timeout_factor: 0.8,
+        min_round_timeout_seconds: 0,
+        per_round_timeouts: perRound
+      };
+    })()
   };
 }
 
@@ -1799,6 +1877,12 @@ function handleSSEEvent(evt) {
   } else if (phase === "plan_ready") {
     appendAgentPlan(evt);
     liveRunData.plans.push(evt);
+  } else if (phase === "plan_failed") {
+    appendLiveEntry((evt.display_name || evt.agent_id) + " failed during planning: " + (evt.error || "timeout"), "plan-failed");
+    setBattleNote((evt.display_name || "Agent") + " was eliminated from the debate.", true);
+  } else if (phase === "single_agent_victory") {
+    appendLiveEntry((evt.display_name || evt.agent_id) + " is the only survivor — debate skipped, automatic victory!", "eliminated");
+    setBattleNote("Only one gladiator survived planning. Skipping debate.", true);
   } else if (phase === "plans_ready") {
     liveRunData.plans = evt.plans || [];
     liveRunData.plan_evaluations = evt.evaluations || [];
@@ -1810,24 +1894,30 @@ function handleSSEEvent(evt) {
     setBattleNote("Initial reports are ready. Moving to the report screen for judge-led issue selection.", false);
     window.setTimeout(function() { openReport(currentRunId); }, 500);
   } else if (phase === "debate_round") {
+    // Show skip button
+    skipRoundBtn.classList.remove("hidden");
     // Add round separator in debate view
     var log = document.getElementById("live-log");
     var sep = document.createElement("div");
     sep.className = "round-separator";
-    var timeoutLabel = evt.timeout_seconds ? " · timeout " + Math.floor(evt.timeout_seconds / 60) + "m" + (evt.timeout_seconds % 60 ? evt.timeout_seconds % 60 + "s" : "") : "";
+    var timeoutLabel = evt.timeout_seconds ? " · timeout " + Math.floor(evt.timeout_seconds / 60) + "m" + (evt.timeout_seconds % 60 ? evt.timeout_seconds % 60 + "s" : "") : " · no limit";
     sep.innerHTML = '<span class="round-sep-line"></span><span class="round-sep-label">Round ' +
       (evt.round_index || "?") + ': ' + esc(evt.round_type || "debate") + timeoutLabel + '</span><span class="round-sep-line"></span>';
     log.appendChild(sep);
     setBattleNote(
       "Debate round " + (evt.round_index || "") + " in progress on '" + (evt.agenda_title || evt.round_type || "the current issue") + "'." +
-      (evt.timeout_seconds ? " (timeout: " + Math.floor(evt.timeout_seconds / 60) + "m)" : ""),
+      (evt.timeout_seconds ? " (timeout: " + Math.floor(evt.timeout_seconds / 60) + "m)" : " (no time limit)"),
       true
     );
   } else if (phase === "agent_thinking") {
     appendAgentThinking(evt.display_name || evt.agent_id, "Thinking... (Round " + evt.round_index + ")");
   } else if (phase === "agent_message") {
     appendAgentMessage(evt);
+  } else if (phase === "round_skipped") {
+    skipRoundBtn.classList.add("hidden");
+    appendLiveEntry("Round " + (evt.round_index || "?") + " skipped (" + (evt.messages_collected || 0) + " messages collected before skip)", "skipped");
   } else if (phase === "round_complete" && evt.round) {
+    skipRoundBtn.classList.add("hidden");
     liveRunData.debate_rounds.push(evt.round);
     var msgCount = evt.round.messages ? evt.round.messages.length : 0;
     appendLiveEntry("Round " + evt.round.index + " complete (" + msgCount + " messages, " + (evt.round.usage ? evt.round.usage.total_tokens : 0) + " tokens)", "debate");
@@ -1837,6 +1927,7 @@ function handleSSEEvent(evt) {
     appendLiveEntry(evt.message || "Rendering final verdict...", "verdict");
     setBattleNote("Judge is synthesizing the final verdict and usage report...", true);
   } else if (phase === "complete") {
+    skipRoundBtn.classList.add("hidden");
     liveRunData.verdict = evt.verdict || null;
     liveRunData.budget_by_actor = evt.budget_by_actor || {};
     appendLiveEntry("Debate complete!", "verdict");
@@ -1850,6 +1941,7 @@ function handleSSEEvent(evt) {
     btn.disabled = false;
     btn.textContent = "FIGHT!";
   } else if (phase === "error") {
+    skipRoundBtn.classList.add("hidden");
     appendLiveEntry("Error: " + (evt.message || "Unknown error"), "error");
     setBattleNote("The run ended with an error. Try reducing context size or switching to fewer models.", false);
   } else {

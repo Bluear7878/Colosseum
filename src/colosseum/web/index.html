@@ -170,39 +170,24 @@
       </div>
     </div>
 
-    <details id="advanced-options" class="advanced-options">
-      <summary class="advanced-toggle">Timeout Options</summary>
-      <div class="advanced-grid">
-        <div class="advanced-field">
-          <label class="label" for="planning-timeout">Planning</label>
+    <div id="timeout-section" class="timeout-section">
+      <label class="label">Timeout Settings</label>
+      <p class="timeout-hint">Set per-phase time limits. Check "No limit" to let a phase run as long as it needs.</p>
+      <div class="timeout-rows">
+        <div class="timeout-row">
+          <span class="timeout-label">Planning</span>
           <div class="timeout-input-wrap">
-            <input id="planning-timeout" type="number" min="60" max="900" step="30" class="arena-input-sm timeout-input"/>
+            <input id="planning-timeout" type="number" min="30" max="3600" step="30" class="arena-input-sm timeout-input"/>
             <span class="timeout-unit">sec</span>
           </div>
+          <label class="timeout-nolimit-label">
+            <input id="planning-nolimit" type="checkbox" class="timeout-nolimit"/>
+            <span>No limit</span>
+          </label>
         </div>
-        <div class="advanced-field">
-          <label class="label" for="round-timeout">Round 1</label>
-          <div class="timeout-input-wrap">
-            <input id="round-timeout" type="number" min="60" max="900" step="30" class="arena-input-sm timeout-input"/>
-            <span class="timeout-unit">sec</span>
-          </div>
-        </div>
-        <div class="advanced-field">
-          <label class="label" for="timeout-decay">Decay</label>
-          <div class="timeout-input-wrap">
-            <input id="timeout-decay" type="number" min="0.5" max="1.0" step="0.05" class="arena-input-sm timeout-input"/>
-            <span class="timeout-unit">×/rnd</span>
-          </div>
-        </div>
-        <div class="advanced-field">
-          <label class="label" for="min-timeout">Min</label>
-          <div class="timeout-input-wrap">
-            <input id="min-timeout" type="number" min="30" max="600" step="30" class="arena-input-sm timeout-input"/>
-            <span class="timeout-unit">sec</span>
-          </div>
-        </div>
+        <div id="round-timeout-rows"></div>
       </div>
-    </details>
+    </div>
 
     <div class="arena-callout support-card">
       <div class="callout-copy">
@@ -223,7 +208,10 @@
   <section id="live-feed" class="panel debate-panel hidden">
     <div class="debate-header">
       <h2 class="panel-title">Live Debate</h2>
-      <button id="back-to-setup" class="text-btn">Back to Setup</button>
+      <div class="debate-header-actions">
+        <button id="skip-round-btn" class="btn-skip hidden" title="Skip the current round and move to judge decision">Skip Round</button>
+        <button id="back-to-setup" class="text-btn">Back to Setup</button>
+      </div>
     </div>
     <div id="live-log" class="live-log debate-log"></div>
   </section>

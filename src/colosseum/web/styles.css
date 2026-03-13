@@ -659,32 +659,33 @@ h1 {
   margin-bottom: 4px;
 }
 
-/* ── Advanced options ── */
-.advanced-options {
+/* ── Timeout settings ── */
+.timeout-section {
   margin-bottom: 16px;
 }
 
-.advanced-toggle {
-  cursor: pointer;
-  font-size: 0.82rem;
+.timeout-hint {
+  font-size: 0.78rem;
   color: var(--sand-muted);
-  user-select: none;
+  margin: 2px 0 10px;
 }
 
-.advanced-toggle:hover {
-  color: var(--gold);
-}
-
-.advanced-grid {
+.timeout-rows {
   display: flex;
-  gap: 16px;
-  margin-top: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.advanced-field {
-  flex: 1;
-  min-width: 100px;
+.timeout-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.timeout-label {
+  min-width: 80px;
+  font-size: 0.82rem;
+  color: var(--sand);
 }
 
 .timeout-input-wrap {
@@ -698,10 +699,76 @@ h1 {
   text-align: right;
 }
 
+.timeout-input:disabled {
+  opacity: 0.35;
+}
+
 .timeout-unit {
   font-size: 0.75rem;
   color: var(--sand-muted);
   white-space: nowrap;
+}
+
+.timeout-nolimit-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--sand-muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.timeout-nolimit-label input {
+  accent-color: var(--gold);
+}
+
+/* ── Skip button ── */
+.debate-header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.btn-skip {
+  padding: 5px 14px;
+  border: 1px solid var(--gold);
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--gold);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.btn-skip:hover {
+  background: var(--gold);
+  color: #1a1a2e;
+}
+
+.btn-skip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Plan failed / agent eliminated ── */
+.live-entry.event-plan-failed {
+  color: #e87a5a;
+  border-left: 3px solid #e87a5a;
+  padding-left: 8px;
+}
+
+.live-entry.event-eliminated {
+  color: var(--sand-muted);
+  font-style: italic;
+}
+
+.live-entry.event-skipped {
+  color: var(--gold);
+  border-left: 3px solid var(--gold);
+  padding-left: 8px;
 }
 
 /* ── Fight button ── */

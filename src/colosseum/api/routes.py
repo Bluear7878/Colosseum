@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import traceback
@@ -17,6 +18,7 @@ from colosseum.core.models import (
     HumanJudgeActionRequest,
     JudgeActionType,
     JudgeMode,
+    JudgeVerdict,
     PersonaProfileRequest,
     ProviderQuotaBatchUpdate,
     ProviderQuotaState,
@@ -24,10 +26,26 @@ from colosseum.core.models import (
     RunCreateRequest,
     RunListItem,
     RunStatus,
+    VerdictType,
 )
 
 
 router = APIRouter()
+
+# ── Skip signal registry ──
+# Maps run_id → asyncio.Event. The SSE stream registers an event when a
+# debate round starts; the POST /runs/{run_id}/skip-round endpoint sets it.
+_skip_signals: dict[str, asyncio.Event] = {}
+
+
+def _register_skip_signal(run_id: str) -> asyncio.Event:
+    event = asyncio.Event()
+    _skip_signals[run_id] = event
+    return event
+
+
+def _cleanup_skip_signal(run_id: str) -> None:
+    _skip_signals.pop(run_id, None)
 
 
 @router.get("/health")
@@ -182,12 +200,51 @@ async def create_run_stream(
                     yield f"data: {json.dumps({'phase': 'agent_planning', 'agent_id': event_data['agent_id'], 'display_name': event_data['display_name']})}\n\n"
                 elif event_type == "plan_ready":
                     yield f"data: {json.dumps({'phase': 'plan_ready', 'agent_id': event_data['agent_id'], 'display_name': event_data['display_name'], 'plan_id': event_data['plan_id'], 'summary': event_data['summary'], 'strengths': event_data['strengths'], 'weaknesses': event_data['weaknesses']})}\n\n"
+                elif event_type == "plan_failed":
+                    yield f"data: {json.dumps({'phase': 'plan_failed', 'agent_id': event_data['agent_id'], 'display_name': event_data['display_name'], 'error': event_data['error']})}\n\n"
+
             run.plan_evaluations = orchestrator.judge_service.evaluate_plans(run.plans)
 
             # Send plans summary
             plans_data = [{"plan_id": p.plan_id, "display_name": p.display_name, "agent_id": p.agent_id, "summary": p.summary, "strengths": p.strengths, "weaknesses": p.weaknesses, "architecture": p.architecture} for p in run.plans]
             evals_data = [{"plan_id": e.plan_id, "overall_score": e.overall_score} for e in run.plan_evaluations]
             yield f"data: {json.dumps({'phase': 'plans_ready', 'plans': plans_data, 'evaluations': evals_data})}\n\n"
+
+            # ── Single-agent auto-win ──
+            if len(run.agents) == 1:
+                sole_plan = run.plans[0]
+                run.verdict = JudgeVerdict(
+                    judge_mode=run.judge.mode,
+                    verdict_type=VerdictType.WINNER,
+                    winning_plan_ids=[sole_plan.plan_id],
+                    rationale=f"{sole_plan.display_name} is the only surviving gladiator after planning. Debate skipped.",
+                    selected_strengths=sole_plan.strengths[:4],
+                    rejected_risks=[r.title for r in sole_plan.risks[:3]],
+                    stop_reason="single_agent_remaining",
+                    confidence=1.0,
+                )
+                run.status = RunStatus.COMPLETED
+                run.stop_reason = "single_agent_remaining"
+                run.updated_at = datetime.now(timezone.utc)
+                orchestrator.repository.save_run(run)
+
+                v = run.verdict
+                verdict_data = {
+                    "verdict_type": v.verdict_type.value,
+                    "winning_plan_ids": v.winning_plan_ids,
+                    "rationale": v.rationale,
+                    "selected_strengths": v.selected_strengths,
+                    "rejected_risks": v.rejected_risks,
+                    "stop_reason": v.stop_reason,
+                    "confidence": v.confidence,
+                }
+                budget_by_actor = {
+                    aid: {"total_tokens": u.total_tokens, "prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens}
+                    for aid, u in run.budget_ledger.by_actor.items()
+                }
+                yield f"data: {json.dumps({'phase': 'single_agent_victory', 'agent_id': run.agents[0].agent_id, 'display_name': sole_plan.display_name})}\n\n"
+                yield f"data: {json.dumps({'phase': 'complete', 'verdict': verdict_data, 'budget_total': run.budget_ledger.total.total_tokens, 'budget_by_actor': budget_by_actor})}\n\n"
+                return
 
             if run.judge.mode == JudgeMode.HUMAN:
                 run.status = RunStatus.AWAITING_HUMAN_JUDGE
@@ -198,8 +255,13 @@ async def create_run_stream(
                 return
 
             # Phase: debate rounds
+            skip_event = _register_skip_signal(run.run_id)
 
-            while True:
+            try:
+              while True:
+                # Reset skip event for each round
+                skip_event.clear()
+
                 decision = await orchestrator.judge_service.decide(run)
                 run.judge_trace.append(decision)
 
@@ -243,7 +305,7 @@ async def create_run_stream(
                 round_timeout = run.budget_policy.timeout_for_round(round_idx)
                 bus.emit("debate_round_start", {"round_index": round_idx, "round_type": round_type.value})
                 bus.emit("phase", {"phase": "debate", "message": f"Round {round_idx}: {round_type.value}", "status": "debating"})
-                yield f"data: {json.dumps({'phase': 'debate_round', 'round_index': round_idx, 'round_type': round_type.value, 'message': f'Round {round_idx}: {round_type.value}...', 'agenda_title': decision.agenda.title if decision.agenda else '', 'agenda_question': decision.agenda.question if decision.agenda else '', 'timeout_seconds': round_timeout})}\n\n"
+                yield f"data: {json.dumps({'phase': 'debate_round', 'round_index': round_idx, 'round_type': round_type.value, 'message': f'Round {round_idx}: {round_type.value}...', 'agenda_title': decision.agenda.title if decision.agenda else '', 'agenda_question': decision.agenda.question if decision.agenda else '', 'timeout_seconds': round_timeout or None})}\n\n"
 
                 run.status = RunStatus.DEBATING
                 debate_round = None
@@ -252,6 +314,7 @@ async def create_run_stream(
                     round_type=round_type,
                     agenda=decision.agenda,
                     instructions="Focus on the current judge agenda only.",
+                    skip_event=skip_event,
                 ):
                     if isinstance(event_data, dict):
                         bus.emit(event_type, event_data)
@@ -259,6 +322,8 @@ async def create_run_stream(
                         yield f"data: {json.dumps({'phase': 'agent_thinking', 'agent_id': event_data['agent_id'], 'display_name': event_data['display_name'], 'round_index': event_data['round_index']})}\n\n"
                     elif event_type == "agent_message":
                         yield f"data: {json.dumps({'phase': 'agent_message', 'agent_id': event_data['agent_id'], 'display_name': event_data['display_name'], 'content': event_data['content'], 'critique_count': event_data['critique_count'], 'defense_count': event_data['defense_count'], 'concession_count': event_data['concession_count'], 'novelty_score': event_data['novelty_score'], 'usage': event_data['usage'], 'round_index': event_data['round_index']})}\n\n"
+                    elif event_type == "round_skipped":
+                        yield f"data: {json.dumps({'phase': 'round_skipped', 'round_index': event_data['round_index'], 'messages_collected': event_data['messages_collected']})}\n\n"
                     elif event_type == "round_complete":
                         debate_round = event_data
 
@@ -286,6 +351,8 @@ async def create_run_stream(
 
                 run.updated_at = datetime.now(timezone.utc)
                 orchestrator.repository.save_run(run)
+            finally:
+                _cleanup_skip_signal(run.run_id)
 
             # Phase: verdict
             bus.emit("phase", {"phase": "verdict", "message": "Rendering final verdict...", "status": "debating"})
@@ -346,6 +413,16 @@ async def list_runs(
     orchestrator=Depends(get_orchestrator),
 ) -> list[RunListItem]:
     return orchestrator.list_runs()
+
+
+@router.post("/runs/{run_id}/skip-round")
+async def skip_round(run_id: str) -> dict:
+    """Signal the running debate to skip the current round."""
+    event = _skip_signals.get(run_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="No active debate round for this run.")
+    event.set()
+    return {"skipped": True, "run_id": run_id}
 
 
 @router.get("/provider-quotas", response_model=list[ProviderQuotaState])

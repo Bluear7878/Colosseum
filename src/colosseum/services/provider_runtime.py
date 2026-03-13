@@ -109,7 +109,8 @@ class ProviderRuntimeService:
     ) -> ProviderExecution:
         original_provider = provider_config.model_copy(deep=True)
         if timeout_override is not None:
-            original_provider.timeout_seconds = timeout_override
+            # 0 means "no limit" → store None so asyncio.wait_for skips timeout
+            original_provider.timeout_seconds = timeout_override if timeout_override > 0 else None
         current_provider = original_provider.model_copy(deep=True)
         attempts = 0
 

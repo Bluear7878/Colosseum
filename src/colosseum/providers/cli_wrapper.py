@@ -35,7 +35,10 @@ def build_prompt(data: dict) -> str:
     image_note = build_image_note(metadata)
     image_preamble = f"{image_note}\n\n" if image_note else ""
 
-    prompt = f"{persona_preamble}{image_preamble}Operation: {operation}\n\n{instructions}\n\n"
+    search_policy = metadata.get("search_policy")
+    search_preamble = f"Search policy: {search_policy}\n\n" if search_policy else ""
+
+    prompt = f"{persona_preamble}{image_preamble}{search_preamble}Operation: {operation}\n\n{instructions}\n\n"
     prompt += "Respond with valid JSON containing these fields:\n"
 
     if operation == "plan":

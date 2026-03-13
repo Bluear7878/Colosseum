@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 from statistics import mean
 
 from colosseum.core.config import (
-    EVIDENCE_POLICY,
+    build_evidence_policy,
     MAX_DEBATE_MEMORY_CHARS,
     MAX_DEBATE_PEER_SUMMARIES,
     MAX_DEBATE_SUMMARY_CHARS,
@@ -86,6 +86,8 @@ class DebateEngine:
                         "round_index": round_index,
                         "image_inputs": image_inputs,
                         "image_summary": image_summary,
+                        "encourage_internet_search": run.encourage_internet_search,
+                        "search_policy": build_evidence_policy(run.encourage_internet_search),
                     },
                 )
             )
@@ -176,6 +178,8 @@ class DebateEngine:
                         "round_index": round_index,
                         "image_inputs": image_inputs,
                         "image_summary": image_summary,
+                        "encourage_internet_search": run.encourage_internet_search,
+                        "search_policy": build_evidence_policy(run.encourage_internet_search),
                         "persona": a.persona_content or "",
                     },
                 )
@@ -296,7 +300,7 @@ class DebateEngine:
         prompt_parts.extend([
             f"Memory summary: {memory}",
             f"Priority focus: {agenda.question if agenda else self._focus_hint(run)}",
-            EVIDENCE_POLICY,
+            build_evidence_policy(run.encourage_internet_search),
             "Constraints: You MUST directly respond to other participants' arguments. "
             "Quote or reference specific points they made. Rebut claims you disagree with, "
             "concede points that are well-supported, and propose alternatives where appropriate. "

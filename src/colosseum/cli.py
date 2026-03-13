@@ -1042,6 +1042,7 @@ def cmd_debate(args: argparse.Namespace) -> None:
     # Build request
     request = RunCreateRequest(
         project_name="Colosseum",
+        encourage_internet_search=False,
         task=TaskSpec(
             title=topic[:120],
             problem_statement=topic,
@@ -1122,6 +1123,7 @@ def cmd_debate(args: argparse.Namespace) -> None:
         from colosseum.core.models import ExperimentRun as _ER
         _preview_run = _ER(
             project_name=request.project_name,
+            encourage_internet_search=request.encourage_internet_search,
             task=request.task,
             agents=request.agents,
             judge=request.judge,
@@ -1158,6 +1160,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> object:
     preset_run_id = getattr(request, "_monitor_run_id", None)
     run = ExperimentRun(
         project_name=request.project_name,
+        encourage_internet_search=request.encourage_internet_search,
         task=request.task,
         agents=request.agents,
         judge=request.judge,

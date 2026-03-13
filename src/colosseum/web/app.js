@@ -100,6 +100,7 @@ var MAX_TEXT_FILE_BYTES = 100000;
 var MAX_IMAGE_FILE_BYTES = 4 * 1024 * 1024;
 var currentRunId = null;
 var currentMode = "live"; // "live" or "result"
+var encourageInternetSearch = loadBooleanSetting("colosseum:encourage_search", true);
 var currentJudgeMode = "automated"; // "automated", "ai", or "human"
 var judgeModelIndex = {};
 
@@ -112,6 +113,22 @@ function loadCustomModels() {
 function saveCustomModels(list) {
   localStorage.setItem("colosseum:custom_models", JSON.stringify(list.map(normalizeCustomModel)));
 }
+function loadBooleanSetting(key, fallback) {
+  try {
+    var raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return raw === "true";
+  }
+  catch (e) { return fallback; }
+}
+
+function saveBooleanSetting(key, value) {
+  try {
+    localStorage.setItem(key, value ? "true" : "false");
+  }
+  catch (e) { /* ignore */ }
+}
+
 var customModels = loadCustomModels();
 
 var gladiatorPersonas = {};  // id -> {persona_id, persona_content}
@@ -853,10 +870,27 @@ var DEPTH_PROFILES = {
   4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85, planning_timeout: 420, round_timeout: 360 },
   5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92, planning_timeout: 480, round_timeout: 420 }
 };
+var planningTimeoutInput = document.getElementById("planning-timeout");
+var roundTimeoutInput = document.getElementById("round-timeout");
+var timeoutDecayInput = document.getElementById("timeout-decay");
+var minTimeoutInput = document.getElementById("min-timeout");
+
+function syncTimeoutDefaults() {
+  var v = parseInt(depthSlider.value);
+  var profile = DEPTH_PROFILES[v] || DEPTH_PROFILES[3];
+  planningTimeoutInput.value = profile.planning_timeout;
+  roundTimeoutInput.value = profile.round_timeout;
+  timeoutDecayInput.value = "0.80";
+  minTimeoutInput.value = "120";
+}
+
 depthSlider.addEventListener("input", function() {
   var v = parseInt(depthSlider.value);
   depthVal.textContent = v + (v === 1 ? " round" : " rounds") + " — " + (DEPTH_LABELS[v] || "");
+  syncTimeoutDefaults();
 });
+
+syncTimeoutDefaults();
 
 /* ── Mode toggle ── */
 var modeLive = document.getElementById("mode-live");
@@ -881,6 +915,8 @@ var judgeHuman = document.getElementById("judge-human");
 var judgeModelWrap = document.getElementById("judge-model-wrap");
 var judgeModelSelect = document.getElementById("judge-model");
 var judgeNote = document.getElementById("judge-note");
+var searchToggle = document.getElementById("encourage-search-toggle");
+var searchNote = document.getElementById("search-note");
 
 var JUDGE_NOTES = {
   automated: "Colosseum's built-in judge balances evidence quality, disagreement, and budget pressure.",
@@ -943,6 +979,26 @@ if (judgeModelSelect) {
 
 renderJudgeModelOptions();
 updateJudgeControls();
+updateSearchPreferenceUI();
+
+function updateSearchPreferenceUI() {
+  if (searchToggle) searchToggle.checked = !!encourageInternetSearch;
+  if (!searchNote) return;
+  if (encourageInternetSearch) {
+    searchNote.textContent = "When enabled, agents are encouraged to check authoritative web sources if their provider supports browsing. If not, they must say so instead of guessing.";
+  } else {
+    searchNote.textContent = "When disabled, agents are pushed to stay inside the frozen bundle, avoid memory-based fill-ins, and mark uncertainty explicitly.";
+  }
+}
+
+if (searchToggle) {
+  searchToggle.addEventListener("change", function() {
+    encourageInternetSearch = !!searchToggle.checked;
+    saveBooleanSetting("colosseum:encourage_search", encourageInternetSearch);
+    updateSearchPreferenceUI();
+  });
+}
+
 
 /* ── File attachments ── */
 var fileDrop = document.getElementById("file-drop");
@@ -1479,15 +1535,18 @@ function validatePaidSelection() {
 
 function startPolicyNote() {
   var action = document.getElementById("paid-depletion-action").value;
+  var searchLine = encourageInternetSearch
+    ? " Search-aware mode is on, so agents are encouraged to verify uncertain claims with authoritative web sources when their provider supports it."
+    : " Search-aware mode is off, so agents must stay inside the frozen bundle and explicitly mark uncertainty.";
   if (action === "switch_to_free") {
     var fallbackSelect = document.getElementById("free-fallback-model");
     var label = fallbackSelect && fallbackSelect.options[fallbackSelect.selectedIndex] ? fallbackSelect.options[fallbackSelect.selectedIndex].text : "the free fallback";
-    return "Arena locked. If paid quota runs out, later turns will switch to " + label + ".";
+    return "Arena locked. If paid quota runs out, later turns will switch to " + label + "." + searchLine;
   }
   if (action === "wait_for_reset") {
-    return "Arena locked. If paid quota runs out, Colosseum will pause until the tracked reset time.";
+    return "Arena locked. If paid quota runs out, Colosseum will pause until the tracked reset time." + searchLine;
   }
-  return "Arena locked. Preparing shared context and scheduling gladiators...";
+  return "Arena locked. Preparing shared context and scheduling gladiators..." + searchLine;
 }
 
 function buildPayload() {
@@ -1565,6 +1624,7 @@ function buildPayload() {
 
   return {
     project_name: "Colosseum",
+    encourage_internet_search: encourageInternetSearch,
     task: {
       title: topic.length > 120 ? topic.slice(0, 120) : topic,
       problem_statement: topic + (codebaseUrl ? "\n\nCodebase: " + codebaseUrl : ""),
@@ -1586,10 +1646,10 @@ function buildPayload() {
       per_agent_message_limit: 1,
       min_novelty_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).min_novelty,
       convergence_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).convergence,
-      planning_timeout_seconds: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).planning_timeout,
-      round_timeout_seconds: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).round_timeout,
-      late_round_timeout_factor: 0.8,
-      min_round_timeout_seconds: 120
+      planning_timeout_seconds: parseInt(planningTimeoutInput.value) || (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).planning_timeout,
+      round_timeout_seconds: parseInt(roundTimeoutInput.value) || (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).round_timeout,
+      late_round_timeout_factor: parseFloat(timeoutDecayInput.value) || 0.8,
+      min_round_timeout_seconds: parseInt(minTimeoutInput.value) || 120
     }
   };
 }

@@ -141,6 +141,113 @@ h1 {
   border-color: var(--gold);
 }
 
+.arena-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  margin: 0 0 20px;
+  border: 1px solid rgba(212, 164, 76, 0.18);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(212, 164, 76, 0.08), rgba(142, 205, 183, 0.06)),
+    rgba(15, 15, 26, 0.72);
+}
+
+.callout-copy {
+  min-width: 0;
+}
+
+.callout-kicker {
+  display: inline-block;
+  margin-bottom: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-light);
+}
+
+.callout-title {
+  margin: 0 0 6px;
+  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+  font-size: 1.04rem;
+  color: var(--sand);
+}
+
+.callout-text {
+  margin: 0;
+  color: var(--sand-muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-slider {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(212, 164, 76, 0.16);
+  border: 1px solid rgba(212, 164, 76, 0.22);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.switch-slider::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sand);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition: transform 140ms ease;
+}
+
+.switch-row input:checked + .switch-slider {
+  background: rgba(142, 205, 183, 0.28);
+  border-color: rgba(142, 205, 183, 0.45);
+}
+
+.switch-row input:checked + .switch-slider::after {
+  transform: translateX(20px);
+  background: #8ecdb7;
+}
+
+.switch-copy {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--sand);
+}
+
+.support-card {
+  align-items: center;
+}
+
+@media (max-width: 720px) {
+  .arena-callout {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
 /* ── Gladiator Grid ── */
 .gladiator-grid {
   display: flex;
@@ -550,6 +657,51 @@ h1 {
 
 .judge-model-wrap .label {
   margin-bottom: 4px;
+}
+
+/* ── Advanced options ── */
+.advanced-options {
+  margin-bottom: 16px;
+}
+
+.advanced-toggle {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--sand-muted);
+  user-select: none;
+}
+
+.advanced-toggle:hover {
+  color: var(--gold);
+}
+
+.advanced-grid {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.advanced-field {
+  flex: 1;
+  min-width: 100px;
+}
+
+.timeout-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.timeout-input {
+  width: 80px;
+  text-align: right;
+}
+
+.timeout-unit {
+  font-size: 0.75rem;
+  color: var(--sand-muted);
+  white-space: nowrap;
 }
 
 /* ── Fight button ── */

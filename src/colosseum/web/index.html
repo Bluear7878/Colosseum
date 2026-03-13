@@ -51,6 +51,22 @@
       <div id="file-list" class="file-list"></div>
     </div>
 
+
+    <div class="arena-callout search-preference">
+      <div class="callout-copy">
+        <span class="callout-kicker">Evidence Guardrail</span>
+        <h3 class="callout-title">Internet search encouragement</h3>
+        <p id="search-note" class="callout-text">
+          When enabled, agents are encouraged to check authoritative web sources if their provider supports browsing. If not, they must say so instead of guessing.
+        </p>
+      </div>
+      <label class="switch-row" for="encourage-search-toggle">
+        <input id="encourage-search-toggle" type="checkbox" checked/>
+        <span class="switch-slider" aria-hidden="true"></span>
+        <span class="switch-copy">Encourage internet search</span>
+      </label>
+    </div>
+
     <!-- Gladiator selection -->
 	    <label class="label">Choose Your Gladiators (select 2+)</label>
 	    <div id="gladiator-grid" class="gladiator-grid"></div>
@@ -136,6 +152,49 @@
           <button id="mode-result" class="mode-btn" data-mode="result">Results Only</button>
         </div>
       </div>
+    </div>
+
+    <details id="advanced-options" class="advanced-options">
+      <summary class="advanced-toggle">Timeout Options</summary>
+      <div class="advanced-grid">
+        <div class="advanced-field">
+          <label class="label" for="planning-timeout">Planning</label>
+          <div class="timeout-input-wrap">
+            <input id="planning-timeout" type="number" min="60" max="900" step="30" class="arena-input-sm timeout-input"/>
+            <span class="timeout-unit">sec</span>
+          </div>
+        </div>
+        <div class="advanced-field">
+          <label class="label" for="round-timeout">Round 1</label>
+          <div class="timeout-input-wrap">
+            <input id="round-timeout" type="number" min="60" max="900" step="30" class="arena-input-sm timeout-input"/>
+            <span class="timeout-unit">sec</span>
+          </div>
+        </div>
+        <div class="advanced-field">
+          <label class="label" for="timeout-decay">Decay</label>
+          <div class="timeout-input-wrap">
+            <input id="timeout-decay" type="number" min="0.5" max="1.0" step="0.05" class="arena-input-sm timeout-input"/>
+            <span class="timeout-unit">×/rnd</span>
+          </div>
+        </div>
+        <div class="advanced-field">
+          <label class="label" for="min-timeout">Min</label>
+          <div class="timeout-input-wrap">
+            <input id="min-timeout" type="number" min="30" max="600" step="30" class="arena-input-sm timeout-input"/>
+            <span class="timeout-unit">sec</span>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div class="arena-callout support-card">
+      <div class="callout-copy">
+        <span class="callout-kicker">Support Colosseum</span>
+        <h3 class="callout-title">도움이 됐다면 GitHub Star로 응원해주세요</h3>
+        <p class="callout-text">Star 하나가 Colosseum을 더 많은 사람에게 알리는 데 도움이 됩니다.</p>
+      </div>
+      <a id="star-link" class="btn-save btn-sm" href="https://github.com/Bluear7878/Colosseum" target="_blank" rel="noreferrer">GitHub 열기</a>
     </div>
 
     <button id="start-btn" class="btn-fight">FIGHT!</button>

@@ -3,7 +3,7 @@ from __future__ import annotations
 from statistics import mean
 
 from colosseum.core.config import (
-    EVIDENCE_POLICY,
+    build_evidence_policy,
     LOW_EVIDENCE_SUPPORT_THRESHOLD,
     MIN_EVIDENCE_SUPPORT_TO_FINALIZE,
     ROUND_SEQUENCE,
@@ -300,7 +300,9 @@ class JudgeService:
                 "round_count": len(run.debate_rounds),
                 "image_inputs": image_inputs,
                 "image_summary": self._image_summary(image_inputs),
-                "evidence_policy": EVIDENCE_POLICY,
+                "evidence_policy": build_evidence_policy(run.encourage_internet_search),
+                "encourage_internet_search": run.encourage_internet_search,
+                "search_policy": build_evidence_policy(run.encourage_internet_search),
                 "evidence_support": self._evidence_support(run),
                 "suggested_agenda": suggested_agenda.model_dump(mode="json"),
             },
@@ -393,7 +395,9 @@ class JudgeService:
                 "basis_plan_ids": [plan.plan_id for plan in run.plans[:2]],
                 "image_inputs": image_inputs,
                 "image_summary": self._image_summary(image_inputs),
-                "evidence_policy": EVIDENCE_POLICY,
+                "evidence_policy": build_evidence_policy(run.encourage_internet_search),
+                "encourage_internet_search": run.encourage_internet_search,
+                "search_policy": build_evidence_policy(run.encourage_internet_search),
             },
         )
         result = execution.result

@@ -469,6 +469,7 @@ class RuntimeEvent(BaseModel):
 class ExperimentRun(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     project_name: str
+    encourage_internet_search: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     status: RunStatus = RunStatus.PENDING
@@ -503,6 +504,7 @@ class RunListItem(BaseModel):
 
 class RunCreateRequest(BaseModel):
     project_name: str = "Colosseum"
+    encourage_internet_search: bool = False
     task: TaskSpec
     context_sources: list[ContextSourceInput] = Field(default_factory=list)
     agents: list[AgentConfig]

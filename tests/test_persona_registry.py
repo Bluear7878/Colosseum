@@ -132,3 +132,33 @@ def test_generated_persona_remains_registry_compatible(tmp_path):
     assert saved.persona_id == sanitize_persona_id(generated.persona_id)
     assert saved.name == generated.name
     assert "Care about execution risk." in saved.content
+
+
+def test_builtin_public_figure_personas_are_registered_with_safety_guardrails():
+    registry = PersonaRegistry()
+
+    expected_ids = {
+        "cristiano_ronaldo",
+        "lionel_messi",
+        "pep_guardiola",
+        "serena_williams",
+        "geoffrey_hinton",
+        "yoshua_bengio",
+        "andrej_karpathy",
+        "demis_hassabis",
+        "andrew_ng",
+        "fei_fei_li",
+        "ilya_sutskever",
+        "elon_musk",
+    }
+
+    persona_ids = {persona.persona_id for persona in registry.list_personas()}
+    assert expected_ids.issubset(persona_ids)
+
+    ronaldo = registry.get_persona("cristiano_ronaldo")
+    karpathy = registry.get_persona("andrej_karpathy")
+
+    assert ronaldo is not None
+    assert karpathy is not None
+    assert "Do not claim to be Cristiano Ronaldo" in ronaldo.content
+    assert "Do not claim to be Andrej Karpathy" in karpathy.content

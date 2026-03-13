@@ -388,6 +388,7 @@ class JudgeConfig(BaseModel):
     provider: ProviderConfig | None = None
     minimum_confidence_to_stop: float = 0.78
     prefer_merged_plan_on_close_scores: bool = True
+    allow_early_finalization: bool = False
 
 
 class JudgeDecision(BaseModel):

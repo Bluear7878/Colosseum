@@ -703,6 +703,7 @@ h1 {
   opacity: 0.35;
 }
 
+
 .timeout-unit {
   font-size: 0.75rem;
   color: var(--sand-muted);
@@ -792,6 +793,7 @@ h1 {
   border-left: 3px solid var(--gold);
   padding-left: 8px;
 }
+
 
 /* ── Fight button ── */
 .btn-fight {

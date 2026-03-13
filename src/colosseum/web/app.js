@@ -971,6 +971,7 @@ planningNolimit.addEventListener("change", function() {
   planningTimeoutInput.disabled = planningNolimit.checked;
 });
 
+
 depthSlider.addEventListener("input", function() {
   var v = parseInt(depthSlider.value);
   depthVal.textContent = v + (v === 1 ? " round" : " rounds") + " — " + (DEPTH_LABELS[v] || "");

@@ -16,6 +16,7 @@ from colosseum.core.models import (
     GeneratedPersona,
     HumanJudgeActionRequest,
     JudgeActionType,
+    JudgeMode,
     PersonaProfileRequest,
     ProviderQuotaBatchUpdate,
     ProviderQuotaState,
@@ -182,6 +183,14 @@ async def create_run_stream(
             evals_data = [{"plan_id": e.plan_id, "overall_score": e.overall_score} for e in run.plan_evaluations]
             yield f"data: {json.dumps({'phase': 'plans_ready', 'plans': plans_data, 'evaluations': evals_data})}\n\n"
 
+            if run.judge.mode == JudgeMode.HUMAN:
+                run.status = RunStatus.AWAITING_HUMAN_JUDGE
+                run.human_judge_packet = orchestrator.judge_service.build_human_packet(run)
+                run.updated_at = datetime.now(timezone.utc)
+                orchestrator.repository.save_run(run)
+                yield f"data: {json.dumps({'phase': 'human_required', 'run_id': run.run_id})}\n\n"
+                return
+
             # Phase: debate rounds
 
             while True:
@@ -197,6 +206,10 @@ async def create_run_stream(
                     'disagreement_level': decision.disagreement_level,
                     'budget_pressure': decision.budget_pressure,
                     'next_round_type': decision.next_round_type.value if decision.next_round_type else None,
+                    'agenda_title': decision.agenda.title if decision.agenda else "",
+                    'agenda_question': decision.agenda.question if decision.agenda else "",
+                    'agenda_why_it_matters': decision.agenda.why_it_matters if decision.agenda else "",
+                    'focus_areas': decision.focus_areas,
                     'rounds_completed': len(run.debate_rounds),
                     'max_rounds': run.budget_policy.max_rounds,
                 }
@@ -206,6 +219,8 @@ async def create_run_stream(
                     "disagreement_level": decision.disagreement_level,
                     "focus": ", ".join(decision.focus_areas[:3]) if decision.focus_areas else "",
                     "next_round_type": decision.next_round_type.value if decision.next_round_type else "",
+                    "agenda_title": decision.agenda.title if decision.agenda else "",
+                    "agenda_question": decision.agenda.question if decision.agenda else "",
                 })
                 yield f"data: {json.dumps(judge_evt)}\n\n"
 
@@ -221,11 +236,16 @@ async def create_run_stream(
                 round_idx = len(run.debate_rounds) + 1
                 bus.emit("debate_round_start", {"round_index": round_idx, "round_type": round_type.value})
                 bus.emit("phase", {"phase": "debate", "message": f"Round {round_idx}: {round_type.value}", "status": "debating"})
-                yield f"data: {json.dumps({'phase': 'debate_round', 'round_index': round_idx, 'round_type': round_type.value, 'message': f'Round {round_idx}: {round_type.value}...'})}\n\n"
+                yield f"data: {json.dumps({'phase': 'debate_round', 'round_index': round_idx, 'round_type': round_type.value, 'message': f'Round {round_idx}: {round_type.value}...', 'agenda_title': decision.agenda.title if decision.agenda else '', 'agenda_question': decision.agenda.question if decision.agenda else ''})}\n\n"
 
                 run.status = RunStatus.DEBATING
                 debate_round = None
-                async for event_type, event_data in orchestrator.debate_engine.run_round_streaming(run, round_type=round_type):
+                async for event_type, event_data in orchestrator.debate_engine.run_round_streaming(
+                    run,
+                    round_type=round_type,
+                    agenda=decision.agenda,
+                    instructions="Focus on the current judge agenda only.",
+                ):
                     if isinstance(event_data, dict):
                         bus.emit(event_type, event_data)
                     if event_type == "agent_thinking":
@@ -236,6 +256,7 @@ async def create_run_stream(
                         debate_round = event_data
 
                 if debate_round is not None:
+                    debate_round.adjudication = orchestrator.judge_service.adjudicate_round(run, debate_round)
                     run.debate_rounds.append(debate_round)
 
                     # Send round data
@@ -243,6 +264,8 @@ async def create_run_stream(
                         "index": debate_round.index,
                         "round_type": debate_round.round_type.value,
                         "purpose": debate_round.purpose,
+                        "agenda": debate_round.agenda.model_dump(mode="json") if debate_round.agenda else None,
+                        "adjudication": debate_round.adjudication.model_dump(mode="json") if debate_round.adjudication else None,
                         "usage": {"total_tokens": debate_round.usage.total_tokens, "prompt_tokens": debate_round.usage.prompt_tokens, "completion_tokens": debate_round.usage.completion_tokens},
                         "summary": {
                             "key_disagreements": debate_round.summary.key_disagreements,

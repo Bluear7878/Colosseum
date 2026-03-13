@@ -12,6 +12,7 @@ from colosseum.core.config import (
 )
 from colosseum.core.models import (
     AgentConfig,
+    DebateAgenda,
     DebateRound,
     ExperimentRun,
     RoundSummary,
@@ -38,6 +39,7 @@ class DebateEngine:
         self,
         run: ExperimentRun,
         round_type: RoundType,
+        agenda: DebateAgenda | None = None,
         instructions: str | None = None,
     ) -> DebateRound:
         round_index = len(run.debate_rounds) + 1
@@ -51,6 +53,7 @@ class DebateEngine:
                 run,
                 agent,
                 round_type,
+                agenda,
                 instructions,
                 image_summary=image_summary,
                 has_image_inputs=bool(image_inputs),
@@ -76,6 +79,8 @@ class DebateEngine:
                             candidate.display_name for candidate in run.plans if candidate.plan_id != plan.plan_id
                         ],
                         "focus_hint": self._focus_hint(run),
+                        "agenda_title": agenda.title if agenda else "",
+                        "agenda_question": agenda.question if agenda else "",
                         "round_index": round_index,
                         "image_inputs": image_inputs,
                         "image_summary": image_summary,
@@ -112,6 +117,7 @@ class DebateEngine:
             index=round_index,
             round_type=round_type,
             purpose=self._purpose_for(round_type),
+            agenda=agenda,
             messages=messages,
             summary=summary,
             usage=usage,
@@ -121,6 +127,7 @@ class DebateEngine:
         self,
         run: ExperimentRun,
         round_type: RoundType,
+        agenda: DebateAgenda | None = None,
         instructions: str | None = None,
     ):
         """Yields (event_type, data) tuples as agents complete."""
@@ -137,6 +144,7 @@ class DebateEngine:
                 run,
                 agent,
                 round_type,
+                agenda,
                 instructions,
                 image_summary=image_summary,
                 has_image_inputs=bool(image_inputs),
@@ -159,6 +167,8 @@ class DebateEngine:
                         "other_plan_ids": [c.plan_id for c in run.plans if c.plan_id != pl.plan_id],
                         "other_plan_labels": [c.display_name for c in run.plans if c.plan_id != pl.plan_id],
                         "focus_hint": self._focus_hint(run),
+                        "agenda_title": agenda.title if agenda else "",
+                        "agenda_question": agenda.question if agenda else "",
                         "round_index": round_index,
                         "image_inputs": image_inputs,
                         "image_summary": image_summary,
@@ -227,6 +237,7 @@ class DebateEngine:
             index=round_index,
             round_type=round_type,
             purpose=self._purpose_for(round_type),
+            agenda=agenda,
             messages=messages,
             summary=summary,
             usage=usage,
@@ -238,6 +249,7 @@ class DebateEngine:
         run: ExperimentRun,
         agent: AgentConfig,
         round_type: RoundType,
+        agenda: DebateAgenda | None,
         instructions: str | None,
         image_summary: str,
         has_image_inputs: bool,
@@ -263,13 +275,23 @@ class DebateEngine:
             "Peer plan summaries:",
             "\n".join(peer_summaries),
         ]
+        if agenda:
+            prompt_parts.extend(
+                [
+                    f"Judge agenda title: {agenda.title}",
+                    f"Judge question: {agenda.question}",
+                    f"Why this issue matters now: {agenda.why_it_matters or 'The judge selected this as the next issue to resolve.'}",
+                    "Structure your answer around the judge question first. Then explicitly state which peer points "
+                    "you reject, which peer points you accept, and what the judge should adopt from your argument.",
+                ]
+            )
 
         if debate_transcript:
             prompt_parts.append(debate_transcript)
 
         prompt_parts.extend([
             f"Memory summary: {memory}",
-            f"Priority focus: {self._focus_hint(run)}",
+            f"Priority focus: {agenda.question if agenda else self._focus_hint(run)}",
             EVIDENCE_POLICY,
             "Constraints: You MUST directly respond to other participants' arguments. "
             "Quote or reference specific points they made. Rebut claims you disagree with, "
@@ -286,7 +308,7 @@ class DebateEngine:
                 ]
             )
         if instructions:
-            prompt_parts.append(f"Judge instructions: {instructions}")
+            prompt_parts.append(f"Additional judge instructions: {instructions}")
         if agent.persona_content:
             prompt_parts.insert(0, "=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ===")
         elif agent.system_prompt:

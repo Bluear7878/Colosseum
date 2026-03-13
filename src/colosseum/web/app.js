@@ -234,6 +234,11 @@ function esc(v) {
 function fmt(v) { return typeof v === "number" ? v.toFixed(2) : "-"; }
 function show(id) { document.getElementById(id).classList.remove("hidden"); }
 function hide(id) { document.getElementById(id).classList.add("hidden"); }
+function reportUrl(runId) { return "/reports/" + encodeURIComponent(runId); }
+function openReport(runId) {
+  if (!runId) return;
+  window.location.href = reportUrl(runId);
+}
 
 function toast(msg) {
   var el = document.getElementById("toast");
@@ -1539,6 +1544,8 @@ function appendJudgeDecision(evt) {
         '<span class="judge-badge">Judge</span>' +
         '<span class="judge-action judge-action-' + esc(action) + '">' + esc(actionLabel) + '</span>' +
       '</div>' +
+      (evt.agenda_title ? '<div class="judge-agenda-line"><strong>Issue:</strong> ' + esc(evt.agenda_title) + '</div>' : '') +
+      (evt.agenda_question ? '<div class="judge-agenda-question">' + esc(evt.agenda_question) + '</div>' : '') +
       '<div class="judge-reasoning">' + esc(evt.reasoning || "") + '</div>' +
       '<div class="judge-stats">' +
         '<span class="stat-pill">Confidence: ' + (evt.confidence != null ? Number(evt.confidence).toFixed(2) : "-") + '</span>' +
@@ -1577,6 +1584,11 @@ function handleSSEEvent(evt) {
     liveRunData.plan_evaluations = evt.evaluations || [];
     var names = liveRunData.plans.map(function(p) { return p.display_name; }).join(", ");
     appendLiveEntry("All plans evaluated: " + names, "plan");
+  } else if (phase === "human_required") {
+    currentRunId = evt.run_id || currentRunId;
+    appendLiveEntry("Human judge input required. Opening the full battle report...", "verdict");
+    setBattleNote("Initial reports are ready. Moving to the report screen for judge-led issue selection.", false);
+    window.setTimeout(function() { openReport(currentRunId); }, 500);
   } else if (phase === "debate_round") {
     // Add round separator in debate view
     var log = document.getElementById("live-log");
@@ -1585,7 +1597,10 @@ function handleSSEEvent(evt) {
     sep.innerHTML = '<span class="round-sep-line"></span><span class="round-sep-label">Round ' +
       (evt.round_index || "?") + ': ' + esc(evt.round_type || "debate") + '</span><span class="round-sep-line"></span>';
     log.appendChild(sep);
-    setBattleNote("Debate round " + (evt.round_index || "") + " in progress. Agents are reading and responding to each other's arguments.", true);
+    setBattleNote(
+      "Debate round " + (evt.round_index || "") + " in progress on '" + (evt.agenda_title || evt.round_type || "the current issue") + "'.",
+      true
+    );
   } else if (phase === "agent_thinking") {
     appendAgentThinking(evt.display_name || evt.agent_id, "Thinking... (Round " + evt.round_index + ")");
   } else if (phase === "agent_message") {
@@ -1604,18 +1619,14 @@ function handleSSEEvent(evt) {
     liveRunData.budget_by_actor = evt.budget_by_actor || {};
     appendLiveEntry("Debate complete!", "verdict");
     if (currentRunId) {
-      api("/runs/" + encodeURIComponent(currentRunId))
-        .then(function(run) { renderResult(run); })
-        .catch(function() { renderLiveResult(); });
+      setBattleNote("Battle finished. Opening the full report...", false);
+      window.setTimeout(function() { openReport(currentRunId); }, 600);
     } else {
       renderLiveResult();
     }
-    // Show setup again and re-enable button
-    show("setup");
     var btn = document.getElementById("start-btn");
     btn.disabled = false;
     btn.textContent = "FIGHT!";
-    setBattleNote("Debate finished. Review the full debate, strategies, and verdict below.", false);
   } else if (phase === "error") {
     appendLiveEntry("Error: " + (evt.message || "Unknown error"), "error");
     setBattleNote("The run ended with an error. Try reducing context size or switching to fewer models.", false);
@@ -1798,9 +1809,13 @@ function startResultMode(payload, btn) {
   api("/runs", { method: "POST", body: JSON.stringify(payload) })
     .then(function(run) {
       currentRunId = run.run_id;
-      renderResult(run);
-      toast("Battle complete!");
-      setBattleNote("Battle finished. Review the verdict and resource tally below.", false);
+      if (run.status === "awaiting_human_judge") {
+        toast("Opening the judge report.");
+      } else {
+        toast("Battle complete!");
+      }
+      setBattleNote("Opening the full battle report...", false);
+      openReport(run.run_id);
     })
     .catch(function(e) {
       toast("Error: " + (e.message || "Failed to start battle."));
@@ -1818,14 +1833,16 @@ function recoverRun(runId, btn, attempt) {
     .then(function(run) {
       currentRunId = run.run_id;
       if (run.status === "completed" || run.status === "failed" || run.status === "awaiting_human_judge") {
-        renderResult(run);
         if (run.status === "completed") {
           toast("Battle complete!");
-          setBattleNote("Recovered the saved run. Review the verdict and resource tally below.", false);
+          setBattleNote("Recovered the saved run. Opening the full report...", false);
+          openReport(run.run_id);
         } else if (run.status === "awaiting_human_judge") {
-          setBattleNote("Recovered the saved run. Human judge input is required to continue.", false);
+          setBattleNote("Recovered the saved run. Opening the report for human judge actions.", false);
+          openReport(run.run_id);
         } else {
-          setBattleNote("Recovered the saved run, but it failed before completion.", false);
+          setBattleNote("Recovered the saved run, but it failed before completion. Opening the report.", false);
+          openReport(run.run_id);
         }
         btn.disabled = false;
         btn.textContent = "FIGHT!";
@@ -2061,13 +2078,7 @@ document.getElementById("history-btn").addEventListener("click", function() {
 
         list.querySelectorAll("[data-id]").forEach(function(item) {
           item.addEventListener("click", function() {
-            api("/runs/" + item.dataset.id)
-              .then(function(run) {
-                currentRunId = run.run_id;
-                renderResult(run);
-                toast("Past battle loaded.");
-              })
-              .catch(function() { toast("Could not load battle."); });
+            openReport(item.dataset.id);
           });
         });
       }

@@ -284,6 +284,36 @@ class RoundSummary(BaseModel):
     moderator_note: str = ""
 
 
+class DebateAgenda(BaseModel):
+    agenda_id: str = Field(default_factory=lambda: str(uuid4()))
+    title: str
+    question: str
+    why_it_matters: str = ""
+    focus_areas: list[str] = Field(default_factory=list)
+    source_plan_ids: list[str] = Field(default_factory=list)
+
+
+class AdoptedArgument(BaseModel):
+    agent_id: str
+    display_name: str
+    claim_kind: Literal["critique", "defense", "concession", "hybrid"]
+    summary: str
+    target_plan_ids: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    adoption_reason: str = ""
+    source_message_id: str | None = None
+
+
+class RoundAdjudication(BaseModel):
+    agenda_title: str = ""
+    agenda_question: str = ""
+    adopted_arguments: list[AdoptedArgument] = Field(default_factory=list)
+    resolution: str = ""
+    unresolved_points: list[str] = Field(default_factory=list)
+    judge_note: str = ""
+    moved_to_next_issue: bool = True
+
+
 class DebateRound(BaseModel):
     round_id: str = Field(default_factory=lambda: str(uuid4()))
     index: int
@@ -291,8 +321,10 @@ class DebateRound(BaseModel):
     purpose: str
     started_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime = Field(default_factory=utc_now)
+    agenda: DebateAgenda | None = None
     messages: list[AgentMessage] = Field(default_factory=list)
     summary: RoundSummary = Field(default_factory=RoundSummary)
+    adjudication: RoundAdjudication | None = None
     usage: UsageMetrics = Field(default_factory=UsageMetrics)
 
 
@@ -315,6 +347,7 @@ class JudgeDecision(BaseModel):
     next_round_type: RoundType | None = None
     focus_areas: list[str] = Field(default_factory=list)
     budget_pressure: float = 0.0
+    agenda: DebateAgenda | None = None
 
 
 class JudgeVerdict(BaseModel):
@@ -381,6 +414,7 @@ class HumanJudgePacket(BaseModel):
     strongest_arguments: list[str] = Field(default_factory=list)
     recommended_action: str
     available_actions: list[str] = Field(default_factory=list)
+    suggested_agenda: DebateAgenda | None = None
 
 
 class ProviderQuotaState(BaseModel):

@@ -1,40 +1,78 @@
 """Tests for QA fixes: bug fixes, feature improvements, and CLI changes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
+from colosseum.api.routes import create_run_stream, get_run
 from colosseum.core.models import (
     AgentConfig,
     BudgetLedger,
+    ContextSourceInput,
+    ContextSourceKind,
     ExperimentRun,
+    HumanJudgeActionRequest,
     JudgeConfig,
     JudgeMode,
     PlanDocument,
     ProviderConfig,
+    ProviderType,
+    RunCreateRequest,
     TaskSpec,
     UsageMetrics,
 )
-from colosseum.main import app
 from colosseum.providers.mock import MockProvider
-from colosseum.services.judge import JudgeService
 from colosseum.services.budget import BudgetManager
+from colosseum.services.context_bundle import ContextBundleService
+from colosseum.services.debate import DebateEngine
+from colosseum.services.judge import JudgeService
 from colosseum.services.normalizers import ResponseNormalizer
+from colosseum.services.orchestrator import ColosseumOrchestrator
 from colosseum.services.provider_runtime import ProviderRuntimeService
+from colosseum.services.repository import FileRunRepository
+
+
+def build_orchestrator(tmp_path):
+    budget_manager = BudgetManager()
+    normalizer = ResponseNormalizer()
+    repository = FileRunRepository(root=tmp_path)
+    context_service = ContextBundleService()
+    provider_runtime = ProviderRuntimeService(
+        budget_manager=budget_manager,
+        quota_path=tmp_path / "provider_quotas.json",
+    )
+    judge_service = JudgeService(
+        budget_manager=budget_manager,
+        provider_runtime=provider_runtime,
+    )
+    debate_engine = DebateEngine(
+        budget_manager=budget_manager,
+        normalizer=normalizer,
+        provider_runtime=provider_runtime,
+    )
+    return ColosseumOrchestrator(
+        repository=repository,
+        context_service=context_service,
+        debate_engine=debate_engine,
+        judge_service=judge_service,
+        budget_manager=budget_manager,
+        normalizer=normalizer,
+        provider_runtime=provider_runtime,
+    )
 
 
 # ── Bug fix: MockProvider produces varied plans ─────────────────
 
-@pytest.mark.asyncio
-async def test_mock_provider_produces_different_plans_for_different_agents():
+def test_mock_provider_produces_different_plans_for_different_agents():
     """Same model with different agent_ids (mock vs mock_1) should produce different plans."""
     provider_same = MockProvider(model_name="x")
-    result_1 = await provider_same.generate("plan", "test", {"agent_id": "mock", "task_title": "Test"})
-    result_2 = await provider_same.generate("plan", "test", {"agent_id": "mock_1", "task_title": "Test"})
+    result_1 = asyncio.run(provider_same.generate("plan", "test", {"agent_id": "mock", "task_title": "Test"}))
+    result_2 = asyncio.run(provider_same.generate("plan", "test", {"agent_id": "mock_1", "task_title": "Test"}))
     summary_1 = result_1.json_payload.get("summary", "")
     summary_2 = result_2.json_payload.get("summary", "")
     assert summary_1 != summary_2, "Same model with different agent_ids should produce different plans"
@@ -175,74 +213,113 @@ def test_cli_delete_nonexistent():
 
 # ── API: Comprehensive endpoint tests ────────────────────────
 
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-
-def test_api_create_run_with_mock_agents(client):
+def test_api_create_run_with_mock_agents(tmp_path):
     """Create a full run with mock agents via API."""
-    r = client.post("/runs", json={
-        "project_name": "QA",
-        "task": {"title": "API QA", "problem_statement": "test"},
-        "context_sources": [{"source_id": "t", "kind": "inline_text", "label": "t", "content": "x"}],
-        "agents": [
-            {"agent_id": "a", "display_name": "A", "provider": {"type": "mock", "model": "a"}},
-            {"agent_id": "b", "display_name": "B", "provider": {"type": "mock", "model": "b"}},
-        ],
-        "judge": {"mode": "automated"},
-        "budget_policy": {"max_rounds": 1},
-    })
-    assert r.status_code == 200
-    data = r.json()
-    assert data["status"] == "completed"
-    assert len(data["plans"]) == 2
-    assert data["verdict"] is not None
+    orchestrator = build_orchestrator(tmp_path)
+    run = asyncio.run(
+        orchestrator.create_run(
+            RunCreateRequest(
+                project_name="QA",
+                task=TaskSpec(title="API QA", problem_statement="test"),
+                context_sources=[
+                    ContextSourceInput(
+                        source_id="t",
+                        kind=ContextSourceKind.INLINE_TEXT,
+                        label="t",
+                        content="x",
+                    )
+                ],
+                agents=[
+                    AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig(type=ProviderType.MOCK, model="a")),
+                    AgentConfig(agent_id="b", display_name="B", provider=ProviderConfig(type=ProviderType.MOCK, model="b")),
+                ],
+                judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+            )
+        )
+    )
+    assert run.status.value == "completed"
+    assert len(run.plans) == 2
+    assert run.verdict is not None
 
 
-def test_api_sse_stream_delivers_all_phases(client):
+def test_api_sse_stream_delivers_all_phases(tmp_path):
     """SSE stream should include init, planning, plans_ready, and complete."""
-    r = client.post("/runs/stream", json={
-        "project_name": "SSE",
-        "task": {"title": "SSE", "problem_statement": "test"},
-        "context_sources": [{"source_id": "t", "kind": "inline_text", "label": "t", "content": "x"}],
-        "agents": [
-            {"agent_id": "a", "display_name": "A", "provider": {"type": "mock", "model": "a"}},
-            {"agent_id": "b", "display_name": "B", "provider": {"type": "mock", "model": "b"}},
-        ],
-        "judge": {"mode": "automated"},
-        "budget_policy": {"max_rounds": 1},
-    })
-    events = [json.loads(line[6:]) for line in r.text.split("\n") if line.startswith("data:")]
+    orchestrator = build_orchestrator(tmp_path)
+    response = asyncio.run(
+        create_run_stream(
+            RunCreateRequest(
+                project_name="SSE",
+                task=TaskSpec(title="SSE", problem_statement="test"),
+                context_sources=[
+                    ContextSourceInput(
+                        source_id="t",
+                        kind=ContextSourceKind.INLINE_TEXT,
+                        label="t",
+                        content="x",
+                    )
+                ],
+                agents=[
+                    AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig(type=ProviderType.MOCK, model="a")),
+                    AgentConfig(agent_id="b", display_name="B", provider=ProviderConfig(type=ProviderType.MOCK, model="b")),
+                ],
+                judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+            ),
+            orchestrator=orchestrator,
+        )
+    )
+
+    async def collect_text():
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk))
+        return "".join(chunks)
+
+    text = asyncio.run(collect_text())
+    events = [json.loads(line[6:]) for line in text.split("\n") if line.startswith("data:")]
     phases = [e.get("phase") for e in events]
     assert "init" in phases
     assert "plans_ready" in phases
     assert "complete" in phases
 
 
-def test_api_human_judge_select_winner(client):
+def test_api_human_judge_select_winner(tmp_path):
     """Human judge can select a winner."""
-    r = client.post("/runs", json={
-        "project_name": "HJ",
-        "task": {"title": "HJ", "problem_statement": "test"},
-        "context_sources": [{"source_id": "t", "kind": "inline_text", "label": "t", "content": "x"}],
-        "agents": [
-            {"agent_id": "a", "display_name": "A", "provider": {"type": "mock", "model": "a"}},
-            {"agent_id": "b", "display_name": "B", "provider": {"type": "mock", "model": "b"}},
-        ],
-        "judge": {"mode": "human"},
-    })
-    run = r.json()
-    assert run["status"] == "awaiting_human_judge"
+    orchestrator = build_orchestrator(tmp_path)
+    run = asyncio.run(
+        orchestrator.create_run(
+            RunCreateRequest(
+                project_name="HJ",
+                task=TaskSpec(title="HJ", problem_statement="test"),
+                context_sources=[
+                    ContextSourceInput(
+                        source_id="t",
+                        kind=ContextSourceKind.INLINE_TEXT,
+                        label="t",
+                        content="x",
+                    )
+                ],
+                agents=[
+                    AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig(type=ProviderType.MOCK, model="a")),
+                    AgentConfig(agent_id="b", display_name="B", provider=ProviderConfig(type=ProviderType.MOCK, model="b")),
+                ],
+                judge=JudgeConfig(mode=JudgeMode.HUMAN),
+            )
+        )
+    )
+    assert run.status.value == "awaiting_human_judge"
 
-    plan_id = run["plans"][0]["plan_id"]
-    r2 = client.post(f'/runs/{run["run_id"]}/judge-actions', json={
-        "action": "select_winner",
-        "winning_plan_ids": [plan_id],
-    })
-    assert r2.status_code == 200
-    assert r2.json()["status"] == "completed"
-    assert r2.json()["verdict"]["verdict_type"] == "winner"
+    updated = asyncio.run(
+        orchestrator.continue_human_run(
+            run.run_id,
+            HumanJudgeActionRequest(
+                action="select_winner",
+                winning_plan_ids=[run.plans[0].plan_id],
+            ),
+        )
+    )
+    assert updated.status.value == "completed"
+    assert updated.verdict is not None
+    assert updated.verdict.verdict_type.value == "winner"
 
 
 # ── Bug fix: Repeated -g flags accumulate gladiators ─────────
@@ -290,53 +367,49 @@ def test_cli_json_output_no_ansi():
 
 # ── Internal: MockProvider all operations ─────────────────────
 
-@pytest.mark.asyncio
-async def test_mock_provider_debate_operation():
+def test_mock_provider_debate_operation():
     """MockProvider debate should return structured critique/defense points."""
     provider = MockProvider(model_name="test")
-    result = await provider.generate("debate", "inst", {
+    result = asyncio.run(provider.generate("debate", "inst", {
         "round_type": "critique",
         "own_plan_id": "p1",
         "own_display_name": "Agent A",
         "other_plan_ids": ["p2"],
         "other_plan_labels": ["Agent B"],
-    })
+    }))
     payload = result.json_payload
     assert "critique_points" in payload
     assert "defense_points" in payload
     assert len(payload["critique_points"]) > 0
 
 
-@pytest.mark.asyncio
-async def test_mock_provider_judge_operation():
+def test_mock_provider_judge_operation():
     """MockProvider judge should return action and confidence."""
     provider = MockProvider(model_name="test")
-    result = await provider.generate("judge", "inst", {
+    result = asyncio.run(provider.generate("judge", "inst", {
         "suggested_action": "continue_debate",
-    })
+    }))
     payload = result.json_payload
     assert payload["action"] == "continue_debate"
     assert 0 < payload["confidence"] <= 1.0
     assert "reasoning" in payload
 
 
-@pytest.mark.asyncio
-async def test_mock_provider_synthesis_operation():
+def test_mock_provider_synthesis_operation():
     """MockProvider synthesis should reference basis plan IDs."""
     provider = MockProvider(model_name="test")
-    result = await provider.generate("synthesis", "inst", {
+    result = asyncio.run(provider.generate("synthesis", "inst", {
         "basis_plan_ids": ["plan_a", "plan_b"],
-    })
+    }))
     payload = result.json_payload
     assert "plan_a" in payload["strengths"][1]
     assert "plan_b" in payload["strengths"][1]
 
 
-@pytest.mark.asyncio
-async def test_mock_provider_unknown_operation():
+def test_mock_provider_unknown_operation():
     """MockProvider should handle unknown operations gracefully."""
     provider = MockProvider(model_name="test")
-    result = await provider.generate("unknown_op", "inst", {})
+    result = asyncio.run(provider.generate("unknown_op", "inst", {}))
     assert "Unsupported" in result.json_payload.get("content", "")
 
 
@@ -429,32 +502,49 @@ def test_cli_invalid_depth_rejected(depth):
 
 # ── API: Error handling ───────────────────────────────────────
 
-def test_api_get_nonexistent_run(client):
-    """GET /runs/nonexistent should return 404."""
-    r = client.get("/runs/nonexistent-id-xyz")
-    assert r.status_code == 404
+def test_api_get_nonexistent_run(tmp_path):
+    """GET /runs/nonexistent should raise HTTP 404."""
+    orchestrator = build_orchestrator(tmp_path)
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(get_run("nonexistent-id-xyz", orchestrator=orchestrator))
+    assert exc_info.value.status_code == 404
 
 
-def test_api_human_judge_merge_plans(client):
+def test_api_human_judge_merge_plans(tmp_path):
     """Human judge can merge plans."""
-    r = client.post("/runs", json={
-        "project_name": "merge",
-        "task": {"title": "Merge", "problem_statement": "test"},
-        "context_sources": [{"source_id": "t", "kind": "inline_text", "label": "t", "content": "x"}],
-        "agents": [
-            {"agent_id": "a", "display_name": "A", "provider": {"type": "mock", "model": "a"}},
-            {"agent_id": "b", "display_name": "B", "provider": {"type": "mock", "model": "b"}},
-        ],
-        "judge": {"mode": "human"},
-    })
-    run = r.json()
-    assert run["status"] == "awaiting_human_judge"
+    orchestrator = build_orchestrator(tmp_path)
+    run = asyncio.run(
+        orchestrator.create_run(
+            RunCreateRequest(
+                project_name="merge",
+                task=TaskSpec(title="Merge", problem_statement="test"),
+                context_sources=[
+                    ContextSourceInput(
+                        source_id="t",
+                        kind=ContextSourceKind.INLINE_TEXT,
+                        label="t",
+                        content="x",
+                    )
+                ],
+                agents=[
+                    AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig(type=ProviderType.MOCK, model="a")),
+                    AgentConfig(agent_id="b", display_name="B", provider=ProviderConfig(type=ProviderType.MOCK, model="b")),
+                ],
+                judge=JudgeConfig(mode=JudgeMode.HUMAN),
+            )
+        )
+    )
+    assert run.status.value == "awaiting_human_judge"
 
-    plan_ids = [p["plan_id"] for p in run["plans"]]
-    r2 = client.post(f'/runs/{run["run_id"]}/judge-actions', json={
-        "action": "merge_plans",
-        "winning_plan_ids": plan_ids,
-    })
-    assert r2.status_code == 200
-    assert r2.json()["status"] == "completed"
-    assert r2.json()["verdict"]["verdict_type"] == "merged"
+    updated = asyncio.run(
+        orchestrator.continue_human_run(
+            run.run_id,
+            HumanJudgeActionRequest(
+                action="merge_plans",
+                winning_plan_ids=[plan.plan_id for plan in run.plans],
+            ),
+        )
+    )
+    assert updated.status.value == "completed"
+    assert updated.verdict is not None
+    assert updated.verdict.verdict_type.value == "merged"

@@ -9,7 +9,9 @@ from colosseum.core.config import (
     ROUND_SEQUENCE,
 )
 from colosseum.core.models import (
+    AdoptedArgument,
     DebateRound,
+    DebateAgenda,
     ExperimentRun,
     HumanJudgePacket,
     JudgeActionType,
@@ -19,6 +21,7 @@ from colosseum.core.models import (
     PlanDocument,
     PlanEvaluation,
     PlanSummaryCard,
+    RoundAdjudication,
     RoundType,
     VerdictType,
 )
@@ -77,6 +80,7 @@ class JudgeService:
     def build_human_packet(self, run: ExperimentRun) -> HumanJudgePacket:
         evaluations = run.plan_evaluations or self.evaluate_plans(run.plans)
         score_by_plan = {item.plan_id: item.overall_score for item in evaluations}
+        suggested_agenda = self._select_agenda(run, self._next_round_type(run))
         cards = [
             PlanSummaryCard(
                 plan_id=plan.plan_id,
@@ -102,6 +106,79 @@ class JudgeService:
                 "merge_plans",
                 "request_revision",
             ],
+            suggested_agenda=suggested_agenda,
+        )
+
+    def build_human_round_decision(
+        self,
+        run: ExperimentRun,
+        round_type: RoundType,
+        instructions: str | None = None,
+    ) -> JudgeDecision:
+        agenda = self._select_agenda(run, round_type, instructions=instructions)
+        return JudgeDecision(
+            mode=JudgeMode.HUMAN,
+            action=JudgeActionType.REQUEST_REVISION if round_type == RoundType.TARGETED_REVISION else JudgeActionType.CONTINUE_DEBATE,
+            reasoning="Human judge requested another bounded round on a specific issue.",
+            confidence=1.0,
+            disagreement_level=self._disagreement_level(run),
+            expected_value_of_next_round=0.25,
+            next_round_type=round_type,
+            focus_areas=agenda.focus_areas,
+            budget_pressure=self.budget_manager.budget_pressure(run.budget_policy, run.budget_ledger),
+            agenda=agenda,
+        )
+
+    def adjudicate_round(
+        self,
+        run: ExperimentRun,
+        debate_round: DebateRound,
+    ) -> RoundAdjudication:
+        agenda = debate_round.agenda or self._select_agenda(run, debate_round.round_type)
+        candidates = self._rank_argument_candidates(run, debate_round)
+        adopted: list[AdoptedArgument] = []
+        adopted_agents: set[str] = set()
+        for candidate in candidates:
+            if len(adopted) >= 3:
+                break
+            if candidate.agent_id in adopted_agents and len(candidates) > 3:
+                continue
+            adopted.append(candidate)
+            adopted_agents.add(candidate.agent_id)
+
+        unresolved = debate_round.summary.unresolved_questions[:3]
+        if adopted:
+            adopted_labels = ", ".join(
+                f"{item.display_name} ({item.claim_kind})"
+                for item in adopted[:2]
+            )
+            resolution = (
+                f"The judge resolved the round by adopting {adopted_labels} on the issue "
+                f"'{agenda.title.lower()}'."
+            )
+            judge_note = (
+                "Move to the next issue because the adopted arguments were more evidence-backed "
+                "or more concrete than the alternatives."
+            )
+            moved_to_next_issue = True
+        else:
+            resolution = (
+                "No argument clearly cleared the evidence bar for this issue, so the judge should "
+                "keep the scope narrow if another round is requested."
+            )
+            judge_note = (
+                "The round surfaced disagreement, but not enough objective support to endorse a single stance."
+            )
+            moved_to_next_issue = False
+
+        return RoundAdjudication(
+            agenda_title=agenda.title,
+            agenda_question=agenda.question,
+            adopted_arguments=adopted,
+            resolution=resolution,
+            unresolved_points=unresolved,
+            judge_note=judge_note,
+            moved_to_next_issue=moved_to_next_issue,
         )
 
     def _automated_decide(self, run: ExperimentRun) -> JudgeDecision:
@@ -112,6 +189,7 @@ class JudgeService:
         disagreement_level = self._disagreement_level(run)
         budget_pressure = self.budget_manager.budget_pressure(run.budget_policy, run.budget_ledger)
         next_round_type = self._next_round_type(run)
+        agenda = self._select_agenda(run, next_round_type)
         confidence = self._decision_confidence(run, evaluations, disagreement_level)
         evidence_support = self._evidence_support(run)
         remaining_rounds = run.budget_policy.max_rounds - len(run.debate_rounds)
@@ -144,8 +222,9 @@ class JudgeService:
                 disagreement_level=max(disagreement_level, 0.45),
                 expected_value_of_next_round=0.38,
                 next_round_type=next_round_type,
-                focus_areas=["objective evidence", "explicit uncertainty", "source-backed trade-offs"],
+                focus_areas=agenda.focus_areas or ["objective evidence", "explicit uncertainty", "source-backed trade-offs"],
                 budget_pressure=budget_pressure,
+                agenda=agenda,
             )
 
         if remaining_rounds <= 0:
@@ -197,12 +276,14 @@ class JudgeService:
             disagreement_level=disagreement_level,
             expected_value_of_next_round=0.32,
             next_round_type=next_round_type,
-            focus_areas=self._focus_areas(run),
+            focus_areas=agenda.focus_areas or self._focus_areas(run),
             budget_pressure=budget_pressure,
+            agenda=agenda,
         )
 
     async def _ai_decide(self, run: ExperimentRun) -> JudgeDecision:
         suggested_round = self._next_round_type(run)
+        suggested_agenda = self._select_agenda(run, suggested_round)
         image_inputs = self._image_inputs(run)
         execution = await self.provider_runtime.execute(
             run=run,
@@ -221,10 +302,17 @@ class JudgeService:
                 "image_summary": self._image_summary(image_inputs),
                 "evidence_policy": EVIDENCE_POLICY,
                 "evidence_support": self._evidence_support(run),
+                "suggested_agenda": suggested_agenda.model_dump(mode="json"),
             },
         )
         result = execution.result
         payload = result.json_payload
+        payload_agenda = payload.get("agenda") if isinstance(payload.get("agenda"), dict) else None
+        agenda = (
+            DebateAgenda.model_validate(payload_agenda)
+            if payload_agenda
+            else suggested_agenda
+        )
         return JudgeDecision(
             mode=JudgeMode.AI,
             action=JudgeActionType(payload.get("action", "continue_debate")),
@@ -233,8 +321,9 @@ class JudgeService:
             disagreement_level=float(payload.get("disagreement_level", self._disagreement_level(run))),
             expected_value_of_next_round=float(payload.get("expected_value_of_next_round", 0.2)),
             next_round_type=RoundType(payload["next_round_type"]) if payload.get("next_round_type") else None,
-            focus_areas=[str(item) for item in payload.get("focus_areas", [])],
+            focus_areas=[str(item) for item in payload.get("focus_areas", [])] or agenda.focus_areas,
             budget_pressure=self.budget_manager.budget_pressure(run.budget_policy, run.budget_ledger),
+            agenda=agenda,
         )
 
     def _automated_finalize(
@@ -485,3 +574,209 @@ class JudgeService:
         supported_claims = sum(1 for claim in claims if claim.evidence)
         round_support = supported_claims / len(claims)
         return round((plan_support + round_support) / 2, 2)
+
+    def _select_agenda(
+        self,
+        run: ExperimentRun,
+        round_type: RoundType,
+        instructions: str | None = None,
+    ) -> DebateAgenda:
+        focus_areas = self._focus_areas(run)
+        if instructions:
+            return DebateAgenda(
+                title=self._agenda_title(instructions),
+                question=instructions.strip(),
+                why_it_matters="The judge explicitly requested this issue for the next bounded round.",
+                focus_areas=focus_areas[:3] or [round_type.value],
+                source_plan_ids=[plan.plan_id for plan in run.plans[:2]],
+            )
+
+        used_questions = {
+            debate_round.agenda.question.strip().lower()
+            for debate_round in run.debate_rounds
+            if debate_round.agenda and debate_round.agenda.question
+        }
+        for candidate in self._agenda_candidates(run, round_type):
+            if candidate.question.strip().lower() in used_questions:
+                continue
+            return candidate
+
+        fallback_question = f"Resolve the key disagreement around {', '.join(focus_areas[:2]) or 'implementation risk'}."
+        return DebateAgenda(
+            title=self._agenda_title(fallback_question),
+            question=fallback_question,
+            why_it_matters="The judge still needs one crisp issue to compare the plans side by side.",
+            focus_areas=focus_areas[:3] or [round_type.value],
+            source_plan_ids=[plan.plan_id for plan in run.plans[:2]],
+        )
+
+    def _agenda_candidates(
+        self,
+        run: ExperimentRun,
+        round_type: RoundType,
+    ) -> list[DebateAgenda]:
+        candidates: list[DebateAgenda] = []
+        focus_areas = self._focus_areas(run)
+
+        if self._evidence_support(run) < LOW_EVIDENCE_SUPPORT_THRESHOLD:
+            candidates.append(
+                DebateAgenda(
+                    title="Evidence Grounding",
+                    question="Which claims in the competing plans are directly supported by the frozen evidence, and which remain inference?",
+                    why_it_matters="The debate should not progress while unsupported claims still drive the comparison.",
+                    focus_areas=["objective evidence", "explicit uncertainty", "source-backed trade-offs"],
+                    source_plan_ids=[plan.plan_id for plan in run.plans],
+                )
+            )
+
+        if run.debate_rounds:
+            latest = run.debate_rounds[-1].summary
+            for item in latest.key_disagreements[:3] + latest.unresolved_questions[:2]:
+                text = item.strip()
+                if not text:
+                    continue
+                candidates.append(
+                    DebateAgenda(
+                        title=self._agenda_title(text),
+                        question=f"Take a position on this issue and respond to peer arguments directly: {text}",
+                        why_it_matters="This disagreement remained open after the previous round.",
+                        focus_areas=[text][:1] + focus_areas[:2],
+                        source_plan_ids=self._related_plan_ids(run, text),
+                    )
+                )
+        else:
+            for plan in run.plans:
+                for risk in plan.risks[:1]:
+                    text = risk.title.strip()
+                    if not text:
+                        continue
+                    candidates.append(
+                        DebateAgenda(
+                            title=self._agenda_title(text),
+                            question=f"How should the team address the risk '{text}' without breaking feasibility or maintainability?",
+                            why_it_matters="The opening plans disagree on what the riskiest implementation boundary is.",
+                            focus_areas=[text][:1] + focus_areas[:2],
+                            source_plan_ids=self._related_plan_ids(run, text),
+                        )
+                    )
+                for weak in plan.weaknesses[:1] + plan.open_questions[:1]:
+                    text = weak.strip()
+                    if not text:
+                        continue
+                    candidates.append(
+                        DebateAgenda(
+                            title=self._agenda_title(text),
+                            question=f"Which side has the stronger answer to this issue: {text}",
+                            why_it_matters="This is a plan-level weakness or open question that could change the final ranking.",
+                            focus_areas=[text][:1] + focus_areas[:2],
+                            source_plan_ids=self._related_plan_ids(run, text),
+                        )
+                    )
+
+        if not candidates:
+            candidates.append(
+                DebateAgenda(
+                    title="Final Comparison" if round_type == RoundType.FINAL_COMPARISON else "Implementation Fit",
+                    question="Which plan fits the existing codebase or task context best, and what objective evidence supports that answer?",
+                    why_it_matters="The judge still needs one concrete comparison axis before finalizing.",
+                    focus_areas=focus_areas[:3],
+                    source_plan_ids=[plan.plan_id for plan in run.plans],
+                )
+            )
+        return candidates
+
+    def _agenda_title(self, text: str) -> str:
+        words = [word.strip(" ,.:;!?") for word in text.split() if word.strip(" ,.:;!?")]
+        compact = " ".join(words[:6]).strip()
+        return compact.title() or "Focused Issue"
+
+    def _related_plan_ids(self, run: ExperimentRun, text: str) -> list[str]:
+        lowered = text.lower()
+        related: list[str] = []
+        for plan in run.plans:
+            haystack = " ".join(
+                plan.weaknesses[:2]
+                + [risk.title for risk in plan.risks[:2]]
+                + plan.open_questions[:2]
+                + plan.trade_offs[:2]
+            ).lower()
+            if lowered and lowered in haystack:
+                related.append(plan.plan_id)
+        return related or [plan.plan_id for plan in run.plans[:2]]
+
+    def _rank_argument_candidates(
+        self,
+        run: ExperimentRun,
+        debate_round: DebateRound,
+    ) -> list[AdoptedArgument]:
+        candidates: list[tuple[float, AdoptedArgument]] = []
+        agent_names = {agent.agent_id: agent.display_name for agent in run.agents}
+        for message in debate_round.messages:
+            display_name = agent_names.get(message.agent_id, message.agent_id)
+            for claim in message.critique_points:
+                score = 0.55 + (0.15 if claim.evidence else 0.0) + (message.novelty_score * 0.2)
+                candidates.append(
+                    (
+                        score,
+                        AdoptedArgument(
+                            agent_id=message.agent_id,
+                            display_name=display_name,
+                            claim_kind="critique",
+                            summary=claim.text,
+                            target_plan_ids=claim.target_plan_ids,
+                            evidence=claim.evidence,
+                            adoption_reason="This critique identified a consequential weakness and anchored it to evidence or round novelty.",
+                            source_message_id=message.message_id,
+                        ),
+                    )
+                )
+            for claim in message.defense_points:
+                score = 0.58 + (0.18 if claim.evidence else 0.0) + (message.novelty_score * 0.18)
+                candidates.append(
+                    (
+                        score,
+                        AdoptedArgument(
+                            agent_id=message.agent_id,
+                            display_name=display_name,
+                            claim_kind="defense",
+                            summary=claim.text,
+                            target_plan_ids=claim.target_plan_ids,
+                            evidence=claim.evidence,
+                            adoption_reason="This defense gave the judge a concrete reason to keep or merge part of the proposal.",
+                            source_message_id=message.message_id,
+                        ),
+                    )
+                )
+            for concession in message.concessions[:2]:
+                score = 0.42 + (message.novelty_score * 0.14)
+                candidates.append(
+                    (
+                        score,
+                        AdoptedArgument(
+                            agent_id=message.agent_id,
+                            display_name=display_name,
+                            claim_kind="concession",
+                            summary=concession,
+                            adoption_reason="A direct concession reduced noise and helped the judge narrow the dispute.",
+                            source_message_id=message.message_id,
+                        ),
+                    )
+                )
+            for hybrid in message.hybrid_suggestions[:2]:
+                score = 0.5 + (message.novelty_score * 0.16)
+                candidates.append(
+                    (
+                        score,
+                        AdoptedArgument(
+                            agent_id=message.agent_id,
+                            display_name=display_name,
+                            claim_kind="hybrid",
+                            summary=hybrid,
+                            adoption_reason="This hybrid suggestion combined useful elements without reopening settled arguments.",
+                            source_message_id=message.message_id,
+                        ),
+                    )
+                )
+
+        ranked = sorted(candidates, key=lambda item: item[0], reverse=True)
+        return [item for _, item in ranked]

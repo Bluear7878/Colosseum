@@ -99,12 +99,20 @@ class ColosseumOrchestrator:
                 run.status = RunStatus.COMPLETED
                 run.stop_reason = run.budget_ledger.stop_reason or "budget_stop"
             else:
+                decision = self.judge_service.build_human_round_decision(
+                    run,
+                    round_type,
+                    instructions=action.instructions,
+                )
+                run.judge_trace.append(decision)
                 run.status = RunStatus.DEBATING
                 debate_round = await self.debate_engine.run_round(
                     run,
                     round_type=round_type,
+                    agenda=decision.agenda,
                     instructions=action.instructions,
                 )
+                debate_round.adjudication = self.judge_service.adjudicate_round(run, debate_round)
                 run.debate_rounds.append(debate_round)
                 run.status = RunStatus.AWAITING_HUMAN_JUDGE
                 run.human_judge_packet = self.judge_service.build_human_packet(run)
@@ -157,12 +165,20 @@ class ColosseumOrchestrator:
                 run.status = RunStatus.COMPLETED
                 run.stop_reason = run.budget_ledger.stop_reason or "budget_stop"
             else:
+                decision = self.judge_service.build_human_round_decision(
+                    run,
+                    RoundType.TARGETED_REVISION,
+                    instructions=action.instructions,
+                )
+                run.judge_trace.append(decision)
                 run.status = RunStatus.DEBATING
                 debate_round = await self.debate_engine.run_round(
                     run,
                     round_type=RoundType.TARGETED_REVISION,
+                    agenda=decision.agenda,
                     instructions=action.instructions,
                 )
+                debate_round.adjudication = self.judge_service.adjudicate_round(run, debate_round)
                 run.debate_rounds.append(debate_round)
                 run.status = RunStatus.AWAITING_HUMAN_JUDGE
                 run.human_judge_packet = self.judge_service.build_human_packet(run)
@@ -343,8 +359,10 @@ class ColosseumOrchestrator:
             debate_round = await self.debate_engine.run_round(
                 run,
                 round_type=round_type,
-                instructions="Focus on the highest-value disagreement only.",
+                agenda=decision.agenda,
+                instructions="Focus on the current judge agenda only.",
             )
+            debate_round.adjudication = self.judge_service.adjudicate_round(run, debate_round)
             run.debate_rounds.append(debate_round)
             self._touch(run)
             self.repository.save_run(run)

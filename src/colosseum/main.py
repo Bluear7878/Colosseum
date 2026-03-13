@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import traceback
 from pathlib import Path
@@ -33,17 +34,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         method = request.method
         path = request.url.path
-
-        # Log request body for POST/PUT (non-static)
-        body_text = ""
-        if method in ("POST", "PUT", "PATCH") and not path.startswith("/static"):
-            try:
-                raw = await request.body()
-                body_text = raw.decode("utf-8", errors="replace")[:2000]
-            except Exception:
-                body_text = "<unreadable>"
-
-        logger.info(">>> %s %s %s", method, path, f"body={body_text[:200]}..." if len(body_text) > 200 else f"body={body_text}" if body_text else "")
+        logger.info(">>> %s %s", method, path)
 
         try:
             response = await call_next(request)
@@ -75,14 +66,22 @@ import threading
 from contextlib import asynccontextmanager
 
 
+def _probe_models_background() -> None:
+    try:
+        from colosseum.cli import probe_all_models
+
+        probe_all_models()
+    except Exception:
+        logger.exception("Background model probe failed")
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Run model probing in a background thread at server startup."""
-    from colosseum.cli import probe_all_models
-
-    thread = threading.Thread(target=probe_all_models, daemon=True)
-    thread.start()
-    logger.info("Model probe launched in background thread")
+    """Launch model probing without blocking request startup."""
+    if os.environ.get("COLOSSEUM_DISABLE_STARTUP_PROBE") != "1":
+        thread = threading.Thread(target=_probe_models_background, daemon=True)
+        thread.start()
+        logger.info("Model probe launched in background thread")
     yield
     logger.info("Server shutting down")
 
@@ -97,6 +96,14 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 async def index() -> FileResponse:
     return FileResponse(
         WEB_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/reports/{run_id}", include_in_schema=False)
+async def report_page(run_id: str) -> FileResponse:
+    return FileResponse(
+        WEB_DIR / "report.html",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 

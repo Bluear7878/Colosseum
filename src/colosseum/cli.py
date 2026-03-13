@@ -1234,6 +1234,8 @@ async def _run_debate_live(orch, request, silent: bool = False) -> object:
                 "focus": ", ".join(decision.focus_areas[:3]) if decision.focus_areas else "",
                 "next_round_type": decision.next_round_type.value if decision.next_round_type else "",
                 "reasoning": decision.reasoning[:120],
+                "agenda_title": decision.agenda.title if decision.agenda else "",
+                "agenda_question": decision.agenda.question if decision.agenda else "",
             })
 
             if not silent:
@@ -1260,7 +1262,12 @@ async def _run_debate_live(orch, request, silent: bool = False) -> object:
 
             run.status = RunStatus.DEBATING
             debate_round = None
-            async for event_type, event_data in orch.debate_engine.run_round_streaming(run, round_type=round_type):
+            async for event_type, event_data in orch.debate_engine.run_round_streaming(
+                run,
+                round_type=round_type,
+                agenda=decision.agenda,
+                instructions="Focus on the current judge agenda only.",
+            ):
                 bus.emit(event_type, event_data if isinstance(event_data, dict) else {
                     "round_index": getattr(event_data, "index", 0),
                     "round_type": getattr(event_data, "round_type", ""),
@@ -1280,6 +1287,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> object:
                     })
 
             if debate_round is not None:
+                debate_round.adjudication = orch.judge_service.adjudicate_round(run, debate_round)
                 run.debate_rounds.append(debate_round)
                 if not silent:
                     _round_summary(debate_round)

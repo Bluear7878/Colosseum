@@ -195,23 +195,25 @@ class MockProvider(BaseProvider):
         target_plan = other_plan_ids[0] if other_plan_ids else own_plan_id
         target_label = other_plan_labels[0] if other_plan_labels else target_plan
         focus_hint = metadata.get("focus_hint", "operator control")
+        agenda_title = metadata.get("agenda_title", "Focused Issue")
+        agenda_question = metadata.get("agenda_question", "")
         focus_theme = focus_hint if len(str(focus_hint)) <= 60 else "the open implementation risk"
         image_inputs = metadata.get("image_inputs", [])
         visual_clause = ""
         if image_inputs:
             visual_clause = " The shared image set creates a factual interpretation surface that should be checked explicitly."
         round_prefix = {
-            "critique": f"Critique round. {target_label} needs a clearer stance on {focus_theme}.{visual_clause}",
-            "rebuttal": f"Rebuttal round. {own_display_name} keeps the stronger extension path while accepting one concrete concern.{visual_clause}",
-            "synthesis": f"Synthesis round. A hybrid between {own_display_name} and {target_label} looks stronger than either alone.{visual_clause}",
-            "final_comparison": f"Final comparison. {own_display_name} has the cleaner balance of control, cost, and maintainability.{visual_clause}",
-            "targeted_revision": f"Targeted revision. Narrow the remaining gap around {focus_theme} without reopening the whole plan.{visual_clause}",
+            "critique": f"Critique round on {agenda_title}. {target_label} needs a clearer stance on {focus_theme}.{visual_clause}",
+            "rebuttal": f"Rebuttal round on {agenda_title}. {own_display_name} keeps the stronger extension path while accepting one concrete concern.{visual_clause}",
+            "synthesis": f"Synthesis round on {agenda_title}. A hybrid between {own_display_name} and {target_label} looks stronger than either alone.{visual_clause}",
+            "final_comparison": f"Final comparison on {agenda_title}. {own_display_name} has the cleaner balance of control, cost, and maintainability.{visual_clause}",
+            "targeted_revision": f"Targeted revision on {agenda_title}. Narrow the remaining gap around {focus_theme} without reopening the whole plan.{visual_clause}",
         }.get(round_type, f"{round_type.title()} round response.")
-        critique_text = f"{target_label} should specify migration boundaries for {focus_theme} more clearly."
+        critique_text = f"{target_label} should answer the judge's issue more directly: {agenda_question or focus_theme}."
         if image_inputs:
             critique_text += " It also needs a clearer plan for validating image-grounded claims."
         return {
-            "content": round_prefix,
+            "content": round_prefix + (f" Judge question: {agenda_question}" if agenda_question else ""),
             "critique_points": [
                 {
                     "category": "feasibility",
@@ -238,6 +240,7 @@ class MockProvider(BaseProvider):
         }
 
     def _build_judge_payload(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        suggested_agenda = metadata.get("suggested_agenda", {}) or {}
         return {
             "action": metadata.get("suggested_action", "continue_debate"),
             "confidence": 0.81,
@@ -246,6 +249,7 @@ class MockProvider(BaseProvider):
             "expected_value_of_next_round": 0.33,
             "next_round_type": metadata.get("next_round_type", "rebuttal"),
             "focus_areas": ["migration risk", "cost control", "traceability"],
+            "agenda": suggested_agenda,
         }
 
     def _build_synthesis_payload(self, metadata: dict[str, Any]) -> dict[str, Any]:

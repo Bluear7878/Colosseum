@@ -47,27 +47,52 @@ def build_prompt(data: dict) -> str:
     search_policy = metadata.get("search_policy")
     search_preamble = f"Search policy: {search_policy}\n\n" if search_policy else ""
 
-    prompt = f"{persona_preamble}{image_preamble}{search_preamble}Operation: {operation}\n\n{instructions}\n\n"
+    # Surface task title prominently so the model cannot ignore the topic
+    task_title = metadata.get("task_title", "")
+    task_preamble = f"=== DEBATE TOPIC ===\n{task_title}\n=== END TOPIC ===\n\n" if task_title else ""
+
+    # Enforce response language as the very first instruction
+    response_language = metadata.get("response_language", "")
+    if response_language and response_language != "auto":
+        lang_rule = (
+            f"MANDATORY LANGUAGE: Write your ENTIRE response in {response_language}. "
+            f"Every field, every sentence must be in {response_language}. No other language permitted.\n\n"
+        )
+    else:
+        lang_rule = ""
+
+    prompt = f"{lang_rule}{persona_preamble}{task_preamble}{image_preamble}{search_preamble}Operation: {operation}\n\n{instructions}\n\n"
     prompt += "Respond with valid JSON containing these fields:\n"
 
     if operation == "plan":
         prompt += "summary, evidence_basis (list), assumptions (list), architecture (list), implementation_strategy (list), "
         prompt += "risks (list of {title, severity, mitigation}), strengths (list), weaknesses (list), "
         prompt += "trade_offs (list), open_questions (list)"
+        prompt += "\n\nIMPORTANT: Every field must be strictly relevant to the debate topic above. "
+        prompt += "Do not include generic content or examples unrelated to this specific task."
     elif operation == "debate":
         prompt += "content, critique_points (list of {category, text, target_plan_ids, evidence}), "
         prompt += "defense_points (list of {category, text, target_plan_ids, evidence}), "
         prompt += "concessions (list), hybrid_suggestions (list), referenced_plan_ids (list)"
-        prompt += "\n\nIMPORTANT: You are in a debate. Directly respond to other participants' arguments. "
-        prompt += "Reference specific points they made. Rebut what you disagree with, concede well-supported points."
+        prompt += "\n\nIMPORTANT: You are in a structured evidence-first debate. "
+        prompt += "Every argument must be directly relevant to the debate topic. "
+        prompt += "Directly respond to other participants' specific arguments — reference them by name. "
+        prompt += "Rebut what you disagree with, concede well-supported points. "
+        prompt += "Evidence quality matters more than rhetoric: cite the frozen context or state uncertainty. "
+        prompt += "Do not introduce off-topic content or generic advice unrelated to this task."
     elif operation == "judge":
         prompt += "action (continue_debate|finalize|request_revision), confidence (float), "
         prompt += "reasoning, disagreement_level (float), expected_value_of_next_round (float), "
         prompt += "next_round_type, focus_areas (list)"
-    elif operation == "synthesis":
+        prompt += "\n\nIMPORTANT: Your focus_areas and reasoning must be directly tied to the debate topic. "
+        prompt += "Only continue the debate if agents are producing new, topic-relevant evidence."
+    elif operation in ("synthesis", "report_synthesis"):
         prompt += "summary, evidence_basis (list), assumptions (list), architecture (list), implementation_strategy (list), "
         prompt += "risks (list of {title, severity, mitigation}), strengths (list), weaknesses (list), "
         prompt += "trade_offs (list), open_questions (list)"
+        prompt += "\n\nIMPORTANT: The synthesis must be strictly focused on the debate topic. "
+        prompt += "Select only the strongest evidence-backed ideas from the debate. "
+        prompt += "Do not include generic filler or content unrelated to this specific task."
 
     prompt += "\n\nRule: prefer objective evidence from the provided context bundle. If a claim is inferential or uncertain, say so."
     prompt += "\n\nReturn ONLY valid JSON, no markdown fences or extra text."

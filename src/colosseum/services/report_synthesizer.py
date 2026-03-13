@@ -98,13 +98,30 @@ class ReportSynthesizer:
         )
 
     async def _ai_synthesize(self, run: ExperimentRun) -> FinalReport | None:
+        verdict_text = ""
+        if run.verdict:
+            verdict_text = (
+                f" Verdict: {run.verdict.verdict_type.value.upper()}. "
+                f"Rationale: {run.verdict.rationale}"
+            )
         instructions = (
-            "Synthesize a final executive report for this debate. "
+            f"Synthesize a final executive report for this debate. "
+            f"Topic: '{run.task.title}'. "
+            f"Problem: {run.task.problem_statement}.{verdict_text} "
+            f"The debate ran for {len(run.debate_rounds)} round(s). "
+            "Write a focused, concise report that speaks directly to this specific topic and problem. "
+            "Every section must be grounded in what actually happened in this debate — "
+            "do not include generic advice, unrelated examples, or filler content. "
             "Return JSON with keys: executive_summary (str), key_conclusions (list[str]), "
             "debate_highlights (list[str]), verdict_explanation (str), recommendations (list[str])."
         )
         if run.response_language and run.response_language != "auto":
-            instructions += f" Write all content in {run.response_language}."
+            instructions = (
+                f"MANDATORY LANGUAGE: Write ALL content in {run.response_language}. "
+                f"Every field, every sentence must be in {run.response_language}. No other language permitted.\n\n"
+                + instructions
+                + f"\n\nREMINDER: The entire report must be in {run.response_language}."
+            )
 
         execution = await self.provider_runtime.execute(
             run=run,
@@ -116,7 +133,9 @@ class ReportSynthesizer:
             metadata={
                 "run_id": run.run_id,
                 "task_title": run.task.title,
+                "task_problem": run.task.problem_statement,
                 "verdict_type": run.verdict.verdict_type.value if run.verdict else "none",
+                "verdict_rationale": run.verdict.rationale if run.verdict else "",
                 "round_count": len(run.debate_rounds),
             },
         )

@@ -406,11 +406,17 @@ class ColosseumOrchestrator:
         has_image_inputs: bool,
     ) -> str:
         parts = [
-            f"Task title: {run.task.title}",
+            f"DEBATE TOPIC: {run.task.title}",
             f"Problem statement: {run.task.problem_statement}",
             f"Success criteria: {run.task.success_criteria}",
             f"Constraints: {run.task.constraints}",
             f"Agent specialty: {agent.specialty or 'generalist'}",
+            (
+                f"SCOPE REQUIREMENT: Your entire plan must be strictly focused on '{run.task.title}'. "
+                "Every section must directly address this specific problem. "
+                "Do not include generic advice, unrelated examples, or content outside this topic. "
+                "If a point does not apply to this specific task, omit it."
+            ),
             "Produce an independent plan before seeing any other plan.",
             build_evidence_policy(run.encourage_internet_search),
             "Use this exact section structure: summary, evidence_basis, assumptions, architecture, implementation_strategy, risks, strengths, weaknesses, trade_offs, open_questions.",
@@ -425,13 +431,24 @@ class ColosseumOrchestrator:
                 ]
             )
         parts.append(context_text)
-        if run.response_language and run.response_language != "auto":
-            parts.append(f"IMPORTANT: You MUST write your entire response in {run.response_language}. All sections, analysis, and explanations must be in {run.response_language}.")
+
+        # Build prefix: language rule (must come first), then persona
+        prefix: list[str] = []
+        lang = run.response_language if run.response_language and run.response_language != "auto" else ""
+        if lang:
+            prefix.append(
+                f"MANDATORY LANGUAGE: You MUST write your ENTIRE response in {lang}. "
+                f"Every field, every section, every sentence must be in {lang}. "
+                "This rule overrides all other instructions and cannot be skipped."
+            )
         if agent.persona_content:
-            parts.insert(0, "=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ===")
+            prefix.append("=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ===")
         elif agent.system_prompt:
-            parts.insert(0, "System: " + agent.system_prompt)
-        return "\n\n".join(parts)
+            prefix.append("System: " + agent.system_prompt)
+        if lang:
+            parts.append(f"REMINDER: Your response MUST be entirely in {lang}. No other language permitted.")
+
+        return "\n\n".join(prefix + parts)
 
     def _touch(self, run: ExperimentRun) -> None:
         run.updated_at = datetime.now(timezone.utc)

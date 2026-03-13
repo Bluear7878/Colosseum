@@ -289,9 +289,23 @@ class JudgeService:
         suggested_round = self._next_round_type(run)
         suggested_agenda = self._select_agenda(run, suggested_round)
         image_inputs = self._image_inputs(run)
-        judge_instructions = "Decide whether Colosseum should continue the debate or finalize."
+        judge_instructions = (
+            f"You are judging a structured evidence-first debate on: '{run.task.title}'. "
+            f"Problem: {run.task.problem_statement}. "
+            f"The debate has run {len(run.debate_rounds)} round(s) so far. "
+            "Evaluate: (1) disagreement level between plans on this specific task, "
+            "(2) novelty of recent arguments — are agents adding new task-relevant evidence or repeating themselves, "
+            "(3) evidence quality — are claims grounded in the frozen context or labeled as inference, "
+            "(4) budget pressure. "
+            "Decide: continue_debate if agents are still producing relevant new evidence grounded in this task; "
+            "finalize if arguments are drifting off-topic, repeating without new evidence, or budget is high. "
+            "Your agenda and focus areas must be directly relevant to the debate topic above."
+        )
         if run.response_language and run.response_language != "auto":
-            judge_instructions += f" Write your reasoning in {run.response_language}."
+            judge_instructions += (
+                f" MANDATORY: Write ALL content — reasoning, focus_areas, agenda fields — in {run.response_language}. "
+                "No other language is permitted under any circumstances."
+            )
         execution = await self.provider_runtime.execute(
             run=run,
             actor_id="judge:decision",
@@ -390,9 +404,20 @@ class JudgeService:
         decision: JudgeDecision | None,
     ) -> JudgeVerdict | None:
         image_inputs = self._image_inputs(run)
-        synthesis_instructions = "Produce the final judge verdict and synthesized plan for the run."
+        synthesis_instructions = (
+            f"You are producing the final verdict for a debate on: '{run.task.title}'. "
+            f"Problem: {run.task.problem_statement}. "
+            f"Success criteria: {run.task.success_criteria}. "
+            "Synthesize the strongest evidence-backed ideas from all agents into a final plan "
+            "strictly focused on this task. "
+            "Select only what directly addresses the problem statement and success criteria above. "
+            "Do not include generic content unrelated to this specific task."
+        )
         if run.response_language and run.response_language != "auto":
-            synthesis_instructions += f" Write all content in {run.response_language}."
+            synthesis_instructions += (
+                f" MANDATORY: Write ALL content — every field, every sentence — in {run.response_language}. "
+                "No other language is permitted under any circumstances."
+            )
         execution = await self.provider_runtime.execute(
             run=run,
             actor_id="judge:synthesis",

@@ -80,6 +80,8 @@ class DebateEngine:
                         "other_plan_labels": [
                             candidate.display_name for candidate in run.plans if candidate.plan_id != plan.plan_id
                         ],
+                        "task_title": run.task.title,
+                        "response_language": run.response_language or "",
                         "focus_hint": self._focus_hint(run),
                         "agenda_title": agenda.title if agenda else "",
                         "agenda_question": agenda.question if agenda else "",
@@ -184,6 +186,8 @@ class DebateEngine:
                         "own_display_name": pl.display_name,
                         "other_plan_ids": [c.plan_id for c in run.plans if c.plan_id != pl.plan_id],
                         "other_plan_labels": [c.display_name for c in run.plans if c.plan_id != pl.plan_id],
+                        "task_title": run.task.title,
+                        "response_language": run.response_language or "",
                         "focus_hint": self._focus_hint(run),
                         "agenda_title": agenda.title if agenda else "",
                         "agenda_question": agenda.question if agenda else "",
@@ -360,9 +364,38 @@ class DebateEngine:
         # directly rebut, accept, or build on each other's specific points.
         debate_transcript = self._build_debate_transcript(run, agent)
 
+        round_goals = {
+            RoundType.CRITIQUE: (
+                "Surface the most consequential weaknesses in each peer plan. "
+                "Focus on evidence gaps, architectural flaws, and risks that are specific to this task. "
+                "Every critique must be grounded in the frozen context or explicitly labeled as inference."
+            ),
+            RoundType.REBUTTAL: (
+                "Defend your core choices with evidence, concede valid criticisms honestly, and sharpen trade-offs. "
+                "Propose hybrids if peer arguments revealed genuine weaknesses in your plan. "
+                "Do not simply reassert your plan — respond directly to the critiques raised."
+            ),
+            RoundType.SYNTHESIS: (
+                "Propose merged solutions that retain the strongest evidence-backed ideas from all plans "
+                "and reduce the highest-severity risks. Focus only on what is actually feasible for this specific task. "
+                "Ground every proposal in the frozen context."
+            ),
+            RoundType.FINAL_COMPARISON: (
+                "State concisely which plan or hybrid should win and exactly why, grounded in evidence and the task requirements. "
+                "No new arguments — only your clearest comparative case."
+            ),
+            RoundType.TARGETED_REVISION: (
+                "Address the specific unresolved issue identified by the judge. "
+                "Do not reopen the full debate. Stay narrowly focused on this one issue."
+            ),
+        }
+        round_goal = round_goals.get(round_type, "Contribute your strongest evidence-backed argument for this debate round.")
+
         prompt_parts = [
+            f"DEBATE TOPIC: {run.task.title}",
+            f"Problem: {run.task.problem_statement}",
             f"Round type: {round_type.value}",
-            f"Task: {run.task.title}",
+            f"Round goal: {round_goal}",
             f"Your specialty: {agent.specialty or 'generalist'}",
             f"Your plan summary: {self._compact_text(own_plan.summary, MAX_DEBATE_SUMMARY_CHARS)}",
             f"Your evidence basis: {self._compact_text('; '.join(own_plan.evidence_basis[:3]) or 'No explicit evidence listed.', MAX_DEBATE_SUMMARY_CHARS)}",
@@ -387,11 +420,18 @@ class DebateEngine:
             f"Memory summary: {memory}",
             f"Priority focus: {agenda.question if agenda else self._focus_hint(run)}",
             build_evidence_policy(run.encourage_internet_search),
+            (
+                f"SCOPE ENFORCEMENT: Every argument must be strictly relevant to '{run.task.title}'. "
+                "Do not introduce unrelated topics, generic best practices disconnected from this task, "
+                "or examples from outside this debate's scope. "
+                "If a point does not directly address the judge's question or a peer's argument about this task, omit it."
+            ),
             "Constraints: You MUST directly respond to other participants' arguments. "
             "Quote or reference specific points they made. Rebut claims you disagree with, "
             "concede points that are well-supported, and propose alternatives where appropriate. "
             "Do NOT simply restate your own position — engage with what others have said. "
-            "Support critique/defense claims with evidence arrays.",
+            "Evidence quality matters more than rhetorical force: cite the frozen bundle or state uncertainty explicitly. "
+            "Unsupported claims reduce judge confidence.",
         ])
         if has_image_inputs:
             prompt_parts.extend(
@@ -403,13 +443,24 @@ class DebateEngine:
             )
         if instructions:
             prompt_parts.append(f"Additional judge instructions: {instructions}")
-        if run.response_language and run.response_language != "auto":
-            prompt_parts.append(f"IMPORTANT: You MUST write your entire response in {run.response_language}. All arguments, rebuttals, and analysis must be in {run.response_language}.")
+
+        # Build prefix: language rule first, then persona
+        prefix: list[str] = []
+        lang = run.response_language if run.response_language and run.response_language != "auto" else ""
+        if lang:
+            prefix.append(
+                f"MANDATORY LANGUAGE: You MUST write your ENTIRE response in {lang}. "
+                f"Every field, every argument, every sentence must be in {lang}. "
+                "This rule overrides all other instructions and cannot be skipped."
+            )
         if agent.persona_content:
-            prompt_parts.insert(0, "=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ===")
+            prefix.append("=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ===")
         elif agent.system_prompt:
-            prompt_parts.insert(0, "System: " + agent.system_prompt)
-        return "\n\n".join(prompt_parts)
+            prefix.append("System: " + agent.system_prompt)
+        if lang:
+            prompt_parts.append(f"REMINDER: Your response MUST be entirely in {lang}. No other language permitted.")
+
+        return "\n\n".join(prefix + prompt_parts)
 
     def _build_debate_transcript(self, run: ExperimentRun, agent: AgentConfig) -> str:
         """Build a transcript of previous debate rounds showing what each

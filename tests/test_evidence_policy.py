@@ -1,8 +1,12 @@
+from colosseum.core.config import build_evidence_policy
 from colosseum.core.models import (
+    AgentConfig,
     ExperimentRun,
     JudgeConfig,
     JudgeMode,
     PlanDocument,
+    ProviderConfig,
+    ProviderType,
     RiskItem,
     TaskSpec,
     UsageMetrics,
@@ -11,6 +15,41 @@ from colosseum.services.budget import BudgetManager
 from colosseum.services.judge import JudgeService
 from colosseum.services.normalizers import ResponseNormalizer
 from colosseum.services.provider_runtime import ProviderRuntimeService
+
+
+from colosseum.services.context_bundle import ContextBundleService
+from colosseum.services.debate import DebateEngine
+from colosseum.services.orchestrator import ColosseumOrchestrator
+from colosseum.services.repository import FileRunRepository
+
+
+def build_orchestrator(tmp_path):
+    budget_manager = BudgetManager()
+    normalizer = ResponseNormalizer()
+    repository = FileRunRepository(root=tmp_path)
+    context_service = ContextBundleService()
+    provider_runtime = ProviderRuntimeService(
+        budget_manager=budget_manager,
+        quota_path=tmp_path / "provider_quotas.json",
+    )
+    judge_service = JudgeService(
+        budget_manager=budget_manager,
+        provider_runtime=provider_runtime,
+    )
+    debate_engine = DebateEngine(
+        budget_manager=budget_manager,
+        normalizer=normalizer,
+        provider_runtime=provider_runtime,
+    )
+    return ColosseumOrchestrator(
+        repository=repository,
+        context_service=context_service,
+        debate_engine=debate_engine,
+        judge_service=judge_service,
+        budget_manager=budget_manager,
+        normalizer=normalizer,
+        provider_runtime=provider_runtime,
+    )
 
 
 def build_judge(tmp_path):
@@ -81,3 +120,34 @@ def test_automated_judge_does_not_early_finalize_when_evidence_is_thin(tmp_path)
 
     assert decision.action.value == "continue_debate"
     assert "Evidence grounding" in decision.reasoning
+
+
+def test_build_evidence_policy_changes_with_search_toggle():
+    on_policy = build_evidence_policy(True)
+    off_policy = build_evidence_policy(False)
+
+    assert "Internet search is encouraged" in on_policy
+    assert "Do not fill evidence gaps from memory" in off_policy
+
+
+def test_plan_prompt_reflects_search_preference(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    agent = AgentConfig(
+        agent_id="agent-a",
+        display_name="Agent A",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-a"),
+    )
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Prompt policy", problem_statement="Test search guidance."),
+        agents=[agent],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+        encourage_internet_search=True,
+    )
+
+    enabled_prompt = orchestrator._build_plan_prompt(run, agent, "Frozen context", image_summary="", has_image_inputs=False)
+    assert "Internet search is encouraged" in enabled_prompt
+
+    run.encourage_internet_search = False
+    disabled_prompt = orchestrator._build_plan_prompt(run, agent, "Frozen context", image_summary="", has_image_inputs=False)
+    assert "Do not fill evidence gaps from memory" in disabled_prompt

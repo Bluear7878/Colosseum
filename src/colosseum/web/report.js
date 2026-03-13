@@ -369,6 +369,42 @@ function submitJudgeAction(runId) {
   });
 }
 
+function setupPdfDownload(run) {
+  var btn = document.getElementById("download-pdf-btn");
+  if (!btn) return;
+  if (run.status === "completed" || run.status === "failed") {
+    btn.classList.remove("hidden");
+    btn.onclick = function() {
+      btn.disabled = true;
+      btn.textContent = "Generating...";
+      fetch("/runs/" + encodeURIComponent(run.run_id) + "/pdf")
+        .then(function(r) {
+          if (!r.ok) throw new Error("PDF generation failed: " + r.status);
+          return r.blob();
+        })
+        .then(function(blob) {
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = "colosseum-report-" + run.run_id.slice(0, 8) + ".pdf";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        })
+        .catch(function(err) {
+          toast(err.message || "PDF download failed.");
+        })
+        .then(function() {
+          btn.disabled = false;
+          btn.textContent = "Download PDF";
+        });
+    };
+  } else {
+    btn.classList.add("hidden");
+  }
+}
+
 function renderRun(run) {
   hide("plans-report");
   hide("timeline-report");
@@ -380,6 +416,7 @@ function renderRun(run) {
   renderTimeline(run);
   renderUsage(run);
   renderEvents(run);
+  setupPdfDownload(run);
 }
 
 function loadRun() {

@@ -83,7 +83,9 @@ The UI supports:
 - paid quota tracking
 - custom model registration
 - image attachment uploads for shared VLM context
+- internet-search encouragement toggle to reduce memory-only answers when providers support browsing
 - AI judge model selection from the setup screen using any available built-in or custom model
+- GitHub star encouragement card in the setup screen
 - human judge actions from the report screen when a run is paused for review
 
 ### CLI
@@ -220,6 +222,7 @@ Colosseum is opinionated here:
 - plans are expected to include `evidence_basis`
 - debate claims are expected to include evidence lists
 - unsupported claims are lower-value than source-backed claims
+- the web UI can encourage internet search when provider tooling supports it; if browsing is unavailable, agents are instructed to say so instead of guessing
 - if evidence is weak, the automated judge is less willing to finalize early
 - if a model cannot inspect an image or missing source directly, it should say so instead of fabricating certainty
 

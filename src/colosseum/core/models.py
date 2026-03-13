@@ -312,6 +312,7 @@ class RoundAdjudication(BaseModel):
     unresolved_points: list[str] = Field(default_factory=list)
     judge_note: str = ""
     moved_to_next_issue: bool = True
+    hallucination_flags: list[str] = Field(default_factory=list)
 
 
 class DebateRound(BaseModel):
@@ -481,6 +482,7 @@ class RuntimeEvent(BaseModel):
 
 
 class FinalReport(BaseModel):
+    one_line_verdict: str = ""
     executive_summary: str
     key_conclusions: list[str] = Field(default_factory=list)
     debate_highlights: list[str] = Field(default_factory=list)

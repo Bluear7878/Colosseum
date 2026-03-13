@@ -612,22 +612,26 @@ def _check_tool_status(tool_name: str, info: dict) -> dict:
 
     # Auth check: for tools with login, try a trivial call to see if authenticated.
     if info.get("login"):
-        # Try running the tool with a minimal prompt to detect auth errors
+        # Strip Claude Code nesting vars so the probe isn't blocked by nested-session guard
+        probe_env = {**os.environ}
+        for _k in ("CLAUDECODE", "CLAUDE_CODE"):
+            probe_env.pop(_k, None)
+
         try:
             if tool_name == "claude":
                 probe = subprocess.run(
                     ["claude", "-p", "say ok"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, timeout=30, env=probe_env,
                 )
             elif tool_name == "codex":
                 probe = subprocess.run(
-                    ["codex", "--quiet", "--approval-mode", "full-auto", "-p", "say ok"],
-                    capture_output=True, text=True, timeout=30,
+                    ["codex", "exec", "say ok"],
+                    capture_output=True, text=True, timeout=30, env=probe_env,
                 )
             elif tool_name == "gemini":
                 probe = subprocess.run(
                     ["gemini", "-p", "say ok"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True, text=True, timeout=30, env=probe_env,
                 )
             else:
                 probe = None
@@ -637,10 +641,9 @@ def _check_tool_status(tool_name: str, info: dict) -> dict:
                 status["auth_detail"] = "authenticated"
             elif probe:
                 combined = (probe.stdout + probe.stderr).lower()
-                if "login" in combined or "auth" in combined or "sign in" in combined:
+                if "login" in combined or "auth" in combined or "sign in" in combined or "credentials" in combined:
                     status["auth_detail"] = "not authenticated"
-                elif "quota" in combined or "rate" in combined:
-                    # Quota error still means authenticated
+                elif "quota" in combined or "rate" in combined or "limit" in combined:
                     status["auth_ok"] = True
                     status["auth_detail"] = "authenticated (quota limited)"
                 else:

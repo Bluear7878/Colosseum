@@ -4,6 +4,10 @@ from pathlib import Path
 ARTIFACT_ROOT = Path(".colosseum/runs")
 STATE_ROOT = Path(".colosseum/state")
 PROVIDER_QUOTA_PATH = STATE_ROOT / "provider_quotas.json"
+LOCAL_RUNTIME_SETTINGS_PATH = STATE_ROOT / "local_runtime.json"
+LOCAL_RUNTIME_PID_PATH = STATE_ROOT / "local_runtime.pid"
+LOCAL_RUNTIME_LOG_PATH = STATE_ROOT / "local_runtime.log"
+DEFAULT_LOCAL_RUNTIME_HOST = "127.0.0.1:11435"
 PLAN_SCHEMA_VERSION = "1.0"
 ROUND_SEQUENCE = (
     "critique",

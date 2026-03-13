@@ -44,6 +44,8 @@ def test_provider_factory_uses_selected_local_model():
     assert isinstance(provider, CommandProvider)
     assert "--model" in provider.command
     assert provider.command[-1] == "llama3.3"
+    assert provider.env["OLLAMA_HOST"] == "127.0.0.1:11435"
+    assert provider.env["COLOSSEUM_LOCAL_RUNTIME_MANAGED"] == "1"
 
 
 def test_repository_loads_unique_prefix(tmp_path: Path):

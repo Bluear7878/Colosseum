@@ -180,6 +180,42 @@ var CLI_GROUP_TOOL_MAP = {
 
 // CLI auth states fetched from /setup/status, keyed by group id
 var cliAuthStates = {};
+var localRuntimeState = null;
+var localRuntimeLoading = false;
+
+function isLocalModelType(type) {
+  return type === "ollama" || type === "huggingface_local";
+}
+
+function normalizeLocalModelId(rawModel) {
+  return String(rawModel || "")
+    .replace(/^ollama:/, "")
+    .replace(/^hf:/, "")
+    .replace(/^huggingface:/, "")
+    .trim();
+}
+
+function isLocalModelInstalled(modelId) {
+  if (!localRuntimeState || !localRuntimeState.installed_models_known) return false;
+  var normalized = normalizeLocalModelId(modelId);
+  if (!normalized) return false;
+  return (localRuntimeState.installed_models || []).some(function(installed) {
+    var cleanInstalled = normalizeLocalModelId(installed).replace(/:latest$/, "");
+    var cleanNormalized = normalized.replace(/:latest$/, "");
+    return installed === normalized ||
+      installed === normalized + ":latest" ||
+      cleanInstalled === cleanNormalized;
+  });
+}
+
+function gpuModeValueFromStatus(status) {
+  if (!status || !status.settings) return "auto";
+  if (status.settings.gpu_count === null || typeof status.settings.gpu_count === "undefined") {
+    return "auto";
+  }
+  if (status.settings.gpu_count === 0) return "cpu";
+  return String(status.settings.gpu_count);
+}
 
 function fetchSetupStatus() {
   return api("/setup/status").then(function(statuses) {
@@ -191,6 +227,23 @@ function fetchSetupStatus() {
     cliAuthStates = states;
     renderGladiatorGrid();
   }).catch(function() {});
+}
+
+function fetchLocalRuntimeStatus(ensureReady) {
+  var suffix = ensureReady ? "?ensure_ready=true" : "";
+  localRuntimeLoading = true;
+  renderLocalRuntimePanel();
+  return api("/local-runtime/status" + suffix).then(function(status) {
+    localRuntimeState = status;
+    localRuntimeLoading = false;
+    renderLocalRuntimePanel();
+    renderRegisteredList();
+    return status;
+  }).catch(function(err) {
+    localRuntimeLoading = false;
+    renderLocalRuntimePanel();
+    throw err;
+  });
 }
 
 function isGladiatorAuthBlocked(g) {
@@ -1256,6 +1309,102 @@ document.getElementById("add-cli-btn").addEventListener("click", function() {
   syncCustomModelForm();
 });
 
+function renderLocalRuntimePanel() {
+  var panel = document.getElementById("local-runtime-panel");
+  var type = document.getElementById("cli-type").value;
+  var modelField = document.getElementById("cli-model-id");
+  var summary = document.getElementById("local-runtime-summary");
+  var note = document.getElementById("local-runtime-note");
+  var availability = document.getElementById("local-model-availability");
+  var gpuMode = document.getElementById("local-gpu-mode");
+  var applyBtn = document.getElementById("local-runtime-apply");
+  var refreshBtn = document.getElementById("local-runtime-refresh");
+  var downloadBtn = document.getElementById("local-model-download");
+
+  if (!isLocalModelType(type)) {
+    panel.classList.add("hidden");
+    downloadBtn.classList.add("hidden");
+    return;
+  }
+
+  panel.classList.remove("hidden");
+  summary.innerHTML = "";
+  gpuMode.innerHTML = '<option value="auto">Auto (all detected GPUs)</option><option value="cpu">CPU only</option>';
+
+  if (localRuntimeLoading) {
+    summary.innerHTML = '<span class="runtime-chip">Checking runtime...</span>';
+    note.textContent = "Inspecting the managed runtime and GPU inventory.";
+    availability.textContent = "Checking runtime...";
+    applyBtn.disabled = true;
+    refreshBtn.disabled = true;
+    downloadBtn.classList.add("hidden");
+    return;
+  }
+
+  refreshBtn.disabled = false;
+  applyBtn.disabled = false;
+
+  if (!localRuntimeState) {
+    summary.innerHTML = '<span class="runtime-chip">Runtime status unavailable</span>';
+    note.textContent = "Refresh runtime to inspect GPUs and installed models.";
+    availability.textContent = "Refresh runtime to inspect installed models.";
+    downloadBtn.classList.add("hidden");
+    return;
+  }
+
+  var devices = localRuntimeState.gpu_devices || [];
+  devices.forEach(function(device, idx) {
+    var label = "Use first " + (idx + 1) + " GPU" + (idx === 0 ? "" : "s");
+    gpuMode.innerHTML += '<option value="' + (idx + 1) + '">' + esc(label) + '</option>';
+  });
+  gpuMode.value = gpuModeValueFromStatus(localRuntimeState);
+  if (gpuMode.value !== gpuModeValueFromStatus(localRuntimeState)) {
+    gpuMode.value = devices.length ? String(devices.length) : "cpu";
+  }
+
+  summary.innerHTML =
+    '<span class="runtime-chip' + (localRuntimeState.ollama_installed ? ' ok' : ' warn') + '">' +
+      (localRuntimeState.ollama_installed ? 'Ollama installed' : 'Ollama missing') +
+    '</span>' +
+    '<span class="runtime-chip' + (localRuntimeState.runtime_running ? ' ok' : ' warn') + '">' +
+      (localRuntimeState.runtime_running ? 'Runtime running' : 'Runtime stopped') +
+    '</span>' +
+    '<span class="runtime-chip">Host ' + esc((localRuntimeState.settings && localRuntimeState.settings.host) || '127.0.0.1:11435') + '</span>' +
+    '<span class="runtime-chip">Detected GPUs ' + esc(devices.length) + '</span>';
+
+  if (localRuntimeState.runtime_note) {
+    note.textContent = localRuntimeState.runtime_note;
+  } else if (!devices.length) {
+    note.textContent = "No compatible GPUs detected. Local models will fall back to CPU.";
+  } else {
+    note.textContent = "Colosseum will expose the selected GPUs to its managed local runtime.";
+  }
+
+  var normalizedModel = normalizeLocalModelId(modelField.value);
+  if (!normalizedModel) {
+    availability.textContent = "Enter a local model id to check installation status.";
+    downloadBtn.classList.add("hidden");
+  } else if (!localRuntimeState.installed_models_known) {
+    availability.textContent = "Runtime not started yet. Apply settings or refresh runtime to inspect installed models.";
+    downloadBtn.classList.remove("hidden");
+    downloadBtn.disabled = !localRuntimeState.ollama_installed;
+  } else if (isLocalModelInstalled(normalizedModel)) {
+    availability.innerHTML = '<span class="runtime-badge ok">Installed</span> ' +
+      esc(normalizedModel) + ' is available in the managed runtime.';
+    downloadBtn.classList.add("hidden");
+  } else {
+    availability.innerHTML = '<span class="runtime-badge warn">Missing</span> ' +
+      esc(normalizedModel) + ' is not installed yet.';
+    downloadBtn.classList.remove("hidden");
+    downloadBtn.disabled = !localRuntimeState.ollama_installed;
+  }
+
+  if (!localRuntimeState.ollama_installed) {
+    applyBtn.disabled = true;
+    downloadBtn.disabled = true;
+  }
+}
+
 function syncCustomModelForm() {
   var type = document.getElementById("cli-type").value;
   var tier = document.getElementById("cli-tier").value;
@@ -1281,10 +1430,74 @@ function syncCustomModelForm() {
   help.textContent = tier === "paid"
     ? "Paid custom models can use the same quota tracker. Give them a quota key or let Colosseum generate one."
     : "Free custom models can join debates immediately and can also be used as fallback models. Image-aware custom CLIs can read metadata.image_inputs for shared VLM debates.";
+  renderLocalRuntimePanel();
+  if (
+    isLocalModelType(type) &&
+    !localRuntimeLoading &&
+    (!localRuntimeState || !localRuntimeState.installed_models_known)
+  ) {
+    fetchLocalRuntimeStatus(true).catch(function(err) {
+      toast("Could not inspect local runtime: " + (err.message || ""));
+    });
+  }
 }
 
 document.getElementById("cli-type").addEventListener("change", syncCustomModelForm);
 document.getElementById("cli-tier").addEventListener("change", syncCustomModelForm);
+document.getElementById("cli-model-id").addEventListener("input", renderLocalRuntimePanel);
+document.getElementById("local-runtime-refresh").addEventListener("click", function() {
+  fetchLocalRuntimeStatus(true).then(function() {
+    fetchModels();
+  }).catch(function(err) {
+    toast("Could not refresh local runtime: " + (err.message || ""));
+  });
+});
+document.getElementById("local-runtime-apply").addEventListener("click", function() {
+  var mode = document.getElementById("local-gpu-mode").value;
+  var body = { restart_runtime: true };
+  if (mode === "auto") body.gpu_count = null;
+  else if (mode === "cpu") body.gpu_count = 0;
+  else body.gpu_count = parseInt(mode, 10) || 1;
+
+  localRuntimeLoading = true;
+  renderLocalRuntimePanel();
+  api("/local-runtime/config", {
+    method: "POST",
+    body: JSON.stringify(body)
+  }).then(function(status) {
+    localRuntimeState = status;
+    localRuntimeLoading = false;
+    renderLocalRuntimePanel();
+    renderRegisteredList();
+    fetchModels();
+    toast("Local runtime settings applied.");
+  }).catch(function(err) {
+    localRuntimeLoading = false;
+    renderLocalRuntimePanel();
+    toast("Could not apply local runtime settings: " + (err.message || ""));
+  });
+});
+document.getElementById("local-model-download").addEventListener("click", function() {
+  var modelId = normalizeLocalModelId(document.getElementById("cli-model-id").value);
+  if (!modelId) return toast("Enter a local model id first.");
+  localRuntimeLoading = true;
+  renderLocalRuntimePanel();
+  api("/local-models/download", {
+    method: "POST",
+    body: JSON.stringify({ model: modelId })
+  }).then(function(result) {
+    localRuntimeState = result.status || localRuntimeState;
+    localRuntimeLoading = false;
+    renderLocalRuntimePanel();
+    renderRegisteredList();
+    fetchModels();
+    toast("Downloaded local model: " + modelId);
+  }).catch(function(err) {
+    localRuntimeLoading = false;
+    renderLocalRuntimePanel();
+    toast("Could not download local model: " + (err.message || ""));
+  });
+});
 
 document.getElementById("cli-save").addEventListener("click", function() {
   var name = document.getElementById("cli-name").value.trim();
@@ -1338,8 +1551,14 @@ function renderRegisteredList() {
   var list = document.getElementById("registered-list");
   if (!customModels.length) { list.innerHTML = ""; return; }
   list.innerHTML = customModels.map(function(m) {
+    var runtimeState = "";
+    if (isLocalModelType(m.type) && localRuntimeState && localRuntimeState.installed_models_known) {
+      runtimeState = isLocalModelInstalled(m.model)
+        ? ' <span class="runtime-badge ok">installed</span>'
+        : ' <span class="runtime-badge warn">missing</span>';
+    }
     return '<div class="registered-item">' +
-      '<span>' + esc(m.name) + ' <small>(' + esc(m.type) + ' · ' + esc(m.tier) + ' · ' + esc(m.desc) + ')</small></span>' +
+      '<span>' + esc(m.name) + runtimeState + ' <small>(' + esc(m.type) + ' · ' + esc(m.tier) + ' · ' + esc(m.desc) + ')</small></span>' +
       '<button class="remove-btn" data-rid="' + esc(m.id) + '">Remove</button>' +
       '</div>';
   }).join("");
@@ -1516,7 +1735,7 @@ function buildProviderPayloadFromVariant(gladiatorId, variant, tier) {
 
 function buildProviderPayloadFromCustomModel(model) {
   var rawModel = model.model || "";
-  var normalizedModel = rawModel.replace(/^ollama:/, "").replace(/^hf:/, "");
+  var normalizedModel = normalizeLocalModelId(rawModel);
   var provider = {
     type: model.type,
     model: model.model,

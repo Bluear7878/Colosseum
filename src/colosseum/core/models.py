@@ -143,6 +143,76 @@ class ProviderConfig(BaseModel):
         return self
 
 
+class LocalGpuDevice(BaseModel):
+    """Physical accelerator discovered on the current host."""
+
+    index: int = Field(ge=0)
+    backend: Literal["nvidia", "amd", "unknown"] = "unknown"
+    name: str
+    memory_total_mb: int | None = Field(default=None, ge=0)
+    driver_version: str | None = None
+
+
+class LocalRuntimeSettings(BaseModel):
+    """Persisted settings for the managed local-model runtime.
+
+    `gpu_count=None` means "auto" (use every detected GPU).
+    `gpu_count=0` forces CPU-only execution.
+    Positive integers clamp to the number of detected GPUs and use the first N devices.
+    """
+
+    host: str = "127.0.0.1:11435"
+    gpu_count: int | None = Field(default=None, ge=0)
+    auto_start: bool = True
+
+
+class LocalRuntimeConfigUpdate(BaseModel):
+    """Partial update payload for local runtime settings."""
+
+    gpu_count: int | None = Field(default=None, ge=0)
+    auto_start: bool | None = None
+    restart_runtime: bool = True
+
+
+class LocalRuntimeStatus(BaseModel):
+    """Current runtime status exposed to the CLI and web UI."""
+
+    settings: LocalRuntimeSettings = Field(default_factory=LocalRuntimeSettings)
+    ollama_installed: bool = False
+    ollama_version: str | None = None
+    runtime_running: bool = False
+    managed_pid: int | None = Field(default=None, ge=1)
+    gpu_devices: list[LocalGpuDevice] = Field(default_factory=list)
+    selected_gpu_indices: list[int] = Field(default_factory=list)
+    selected_gpu_count: int = Field(default=0, ge=0)
+    installed_models: list[str] = Field(default_factory=list)
+    installed_models_known: bool = False
+    runtime_note: str | None = None
+
+
+class LocalModelDownloadRequest(BaseModel):
+    """Request payload for downloading a missing local model."""
+
+    model: str
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _require_model_name(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("Local model download requires a model name.")
+        return normalized
+
+
+class LocalModelDownloadResult(BaseModel):
+    """Result payload for a local-model download request."""
+
+    success: bool
+    model: str
+    message: str
+    status: LocalRuntimeStatus
+
+
 class AgentConfig(BaseModel):
     agent_id: str
     display_name: str

@@ -30,10 +30,13 @@ from .routes_setup import (
     cli_versions,
     healthcheck,
     install_tool,
+    download_local_model,
     list_models,
+    local_runtime_status,
     refresh_models,
     setup_status,
     trigger_auth,
+    update_local_runtime_config,
 )
 
 router = APIRouter()
@@ -47,6 +50,9 @@ __all__ = [
     "list_models",
     "cli_versions",
     "refresh_models",
+    "local_runtime_status",
+    "update_local_runtime_config",
+    "download_local_model",
     "trigger_auth",
     "install_tool",
     "create_run",

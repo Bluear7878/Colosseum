@@ -10,6 +10,7 @@ Usage:
     colosseum debate --topic "..." --monitor Run with tmux monitor panel
     colosseum monitor [run_id]               Open live monitor for an active debate
     colosseum models                         List available models
+    colosseum local-runtime status           Inspect managed local-model runtime state
     colosseum personas                       List available personas
     colosseum history                        List past battles
     colosseum show <run_id>                  Show a past battle result
@@ -38,10 +39,12 @@ from colosseum.core.models import (
     ExperimentRun,
     JudgeConfig,
     JudgeMode,
+    LocalRuntimeConfigUpdate,
     RunCreateRequest,
     TaskSpec,
     TaskType,
 )
+from colosseum.services.local_runtime import LocalRuntimeService
 
 # ── ANSI colors (no external deps) ──────────────────────────────
 
@@ -216,12 +219,16 @@ def _discover_ollama_models() -> list[dict]:
     """Discover locally installed Ollama models via `ollama list`."""
     if not shutil.which("ollama"):
         return []
+    runtime = LocalRuntimeService()
+    runtime_env = os.environ.copy()
+    runtime_env.update(runtime.provider_env())
     try:
         result = subprocess.run(
             ["ollama", "list"],
             capture_output=True,
             text=True,
             timeout=10,
+            env=runtime_env,
         )
         if result.returncode != 0:
             return []
@@ -487,6 +494,69 @@ def cmd_models(_args: argparse.Namespace) -> None:
     print(f"\n  {DIM}+ = CLI found in PATH,  x = not found{RST}\n")
 
 
+def _print_local_runtime_status(status) -> None:
+    print(f"\n  {BOLD}Managed Local Runtime{RST}")
+    print(f"  Host: {CYAN}{status.settings.host}{RST}")
+    print(
+        f"  Ollama installed: {GREEN if status.ollama_installed else RED}{status.ollama_installed}{RST}"
+    )
+    if status.ollama_version:
+        print(f"  Version: {DIM}{status.ollama_version}{RST}")
+    print(
+        f"  Runtime running: {GREEN if status.runtime_running else GOLD}{status.runtime_running}{RST}"
+    )
+    print(
+        f"  GPU setting: {DIM}{'auto' if status.settings.gpu_count is None else status.settings.gpu_count}{RST}"
+    )
+    if status.gpu_devices:
+        print(f"  GPUs detected: {len(status.gpu_devices)}")
+        for device in status.gpu_devices:
+            memory = (
+                f"{device.memory_total_mb} MB" if device.memory_total_mb is not None else "unknown"
+            )
+            print(f"    - [{device.index}] {device.name} ({memory})")
+    else:
+        print("  GPUs detected: 0")
+    if status.installed_models_known:
+        print(f"  Installed models: {', '.join(status.installed_models[:8]) or '(none)'}")
+    else:
+        print("  Installed models: unknown (runtime not started yet)")
+    if status.runtime_note:
+        print(f"  Note: {DIM}{status.runtime_note}{RST}")
+    print()
+
+
+def cmd_local_runtime(args: argparse.Namespace) -> None:
+    """Inspect and manage the dedicated runtime Colosseum uses for local models."""
+    service = LocalRuntimeService()
+    action = args.local_command or "status"
+
+    if action == "status":
+        _print_local_runtime_status(service.get_status(ensure_ready=args.ensure_ready))
+        return
+
+    if action == "configure":
+        update_kwargs: dict[str, object] = {"restart_runtime": not args.no_restart}
+        if args.auto_gpu:
+            update_kwargs["gpu_count"] = None
+        elif args.cpu_only:
+            update_kwargs["gpu_count"] = 0
+        elif args.gpu_count is not None:
+            update_kwargs["gpu_count"] = args.gpu_count
+        _print_local_runtime_status(
+            service.update_settings(LocalRuntimeConfigUpdate(**update_kwargs))
+        )
+        return
+
+    if action == "pull":
+        result = service.download_model(args.model)
+        print(f"\n  {(GREEN if result.success else RED)}{result.message}{RST}\n")
+        _print_local_runtime_status(result.status)
+        return
+
+    raise ValueError(f"Unsupported local runtime command: {action}")
+
+
 def cmd_personas(_args: argparse.Namespace) -> None:
     """List available personas."""
     from colosseum.personas.loader import PersonaLoader
@@ -729,20 +799,17 @@ def _check_tool_status(tool_name: str, info: dict) -> dict:
         except Exception:
             status["auth_detail"] = "check failed"
     else:
-        # ollama — no auth needed, just check if running
-        try:
-            probe = subprocess.run(
-                ["ollama", "list"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            status["auth_ok"] = probe.returncode == 0
+        # ollama — no auth needed, Colosseum manages a dedicated runtime on demand
+        runtime_status = LocalRuntimeService().get_status()
+        status["auth_ok"] = status["installed"]
+        if not status["installed"]:
+            status["auth_detail"] = "not installed"
+        elif runtime_status.runtime_running:
+            status["auth_detail"] = f"managed runtime running on {runtime_status.settings.host}"
+        else:
             status["auth_detail"] = (
-                "running" if status["auth_ok"] else "not running (start with: ollama serve)"
+                f"managed runtime will auto-start on demand ({runtime_status.settings.host})"
             )
-        except Exception:
-            status["auth_detail"] = "not running"
 
     return status
 
@@ -1670,6 +1737,7 @@ def build_parser() -> argparse.ArgumentParser:
           colosseum debate -t "Monolith vs microservices" -g claude:claude-sonnet-4-6 codex:o3 -p pragmatic_engineer devil_advocate
           colosseum debate -t "Quick test" -g mock:a mock:b --depth 1
           colosseum models
+          colosseum local-runtime status
           colosseum personas
           colosseum check
           colosseum serve
@@ -1683,6 +1751,47 @@ def build_parser() -> argparse.ArgumentParser:
 
     # models
     sub.add_parser("models", help="List available models")
+
+    # local runtime
+    p_local = sub.add_parser("local-runtime", help="Manage the local-model runtime")
+    local_sub = p_local.add_subparsers(dest="local_command")
+    p_local_status = local_sub.add_parser("status", help="Show local runtime and GPU status")
+    p_local_status.add_argument(
+        "--ensure-ready",
+        action="store_true",
+        default=False,
+        help="Start the managed runtime first so installed models can be enumerated.",
+    )
+    p_local_config = local_sub.add_parser("configure", help="Update GPU settings for local models")
+    local_gpu_mode = p_local_config.add_mutually_exclusive_group()
+    local_gpu_mode.add_argument(
+        "--auto-gpu",
+        action="store_true",
+        default=False,
+        help="Expose every detected GPU to the managed runtime.",
+    )
+    local_gpu_mode.add_argument(
+        "--cpu-only",
+        action="store_true",
+        default=False,
+        help="Force the managed runtime to run without GPUs.",
+    )
+    local_gpu_mode.add_argument(
+        "--gpu-count",
+        type=int,
+        default=None,
+        help="Expose the first N detected GPUs to the managed runtime.",
+    )
+    p_local_config.add_argument(
+        "--no-restart",
+        action="store_true",
+        default=False,
+        help="Save settings without restarting the managed runtime immediately.",
+    )
+    p_local_pull = local_sub.add_parser(
+        "pull", help="Download a local model into the managed runtime"
+    )
+    p_local_pull.add_argument("model", help="Model name or prefix form such as ollama:llama3.3")
 
     # personas
     sub.add_parser("personas", help="List available personas")
@@ -1795,6 +1904,7 @@ def main() -> None:
         "serve": cmd_serve,
         "setup": cmd_setup,
         "models": cmd_models,
+        "local-runtime": cmd_local_runtime,
         "personas": cmd_personas,
         "history": cmd_history,
         "show": cmd_show,

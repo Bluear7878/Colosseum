@@ -253,6 +253,10 @@ def call_gemini(prompt: str, model: str = "") -> str:
 
 def call_ollama(prompt: str, model: str = "llama3.3") -> str:
     """Call Ollama: ollama run <model> <prompt>"""
+    if os.environ.get("COLOSSEUM_LOCAL_RUNTIME_MANAGED") == "1":
+        from colosseum.services.local_runtime import LocalRuntimeService
+
+        LocalRuntimeService().ensure_runtime_started()
     sp_timeout = get_subprocess_timeout()
     result = subprocess.run(
         ["ollama", "run", model, prompt], capture_output=True, text=True, timeout=sp_timeout
@@ -333,6 +337,16 @@ def main():
         sys.exit(0)
     except subprocess.TimeoutExpired:
         print(json.dumps({"content": f"CLI tool '{args.provider}' timed out.", "error": "timeout"}))
+        sys.exit(0)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "content": f"CLI tool '{args.provider}' failed before producing output.",
+                    "error": str(exc),
+                }
+            )
+        )
         sys.exit(0)
 
     parsed = parse_response(raw)

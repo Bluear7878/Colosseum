@@ -7,6 +7,14 @@ import subprocess as _sp
 
 from fastapi import APIRouter, HTTPException
 
+from colosseum.core.models import (
+    LocalModelDownloadRequest,
+    LocalModelDownloadResult,
+    LocalRuntimeConfigUpdate,
+    LocalRuntimeStatus,
+)
+from colosseum.services.local_runtime import LocalRuntimeService
+
 router = APIRouter()
 
 
@@ -47,6 +55,40 @@ async def refresh_models() -> list[dict]:
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, probe_all_models)
+
+
+@router.get("/local-runtime/status", response_model=LocalRuntimeStatus)
+async def local_runtime_status(ensure_ready: bool = False) -> LocalRuntimeStatus:
+    """Return managed local-runtime status, GPU inventory, and installed models."""
+    service = LocalRuntimeService()
+    return await asyncio.to_thread(service.get_status, ensure_ready)
+
+
+@router.post("/local-runtime/config", response_model=LocalRuntimeStatus)
+async def update_local_runtime_config(
+    update: LocalRuntimeConfigUpdate,
+) -> LocalRuntimeStatus:
+    """Persist local-runtime settings and restart the managed runtime if requested."""
+    service = LocalRuntimeService()
+    try:
+        return await asyncio.to_thread(service.update_settings, update)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/local-models/download", response_model=LocalModelDownloadResult)
+async def download_local_model(
+    request: LocalModelDownloadRequest,
+) -> LocalModelDownloadResult:
+    """Download a local model into the managed Ollama runtime."""
+    service = LocalRuntimeService()
+    try:
+        result = await asyncio.to_thread(service.download_model, request.model)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.message)
+    return result
 
 
 @router.post("/setup/auth/{tool_name}")

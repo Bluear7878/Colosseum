@@ -7,6 +7,7 @@ from colosseum.core.models import ProviderConfig, ProviderType
 from colosseum.providers.base import BaseProvider
 from colosseum.providers.command import CommandProvider
 from colosseum.providers.mock import MockProvider
+from colosseum.services.local_runtime import LocalRuntimeService
 
 WRAPPER_SCRIPT = str(Path(__file__).resolve().parent / "cli_wrapper.py")
 
@@ -30,6 +31,7 @@ def _timeout(config: ProviderConfig, default: int) -> int | None:
 
 
 def build_provider(config: ProviderConfig) -> BaseProvider:
+    runtime_env = LocalRuntimeService().provider_env()
     if config.type == ProviderType.MOCK:
         return MockProvider(model_name=config.model)
     if config.type == ProviderType.COMMAND:
@@ -72,7 +74,7 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             model_name=config.model or f"ollama:{ollama_model}",
             command=config.command
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "ollama", "--model", ollama_model],
-            env=config.env,
+            env={**runtime_env, **config.env},
             timeout_seconds=_timeout(config, 600),
         )
     if config.type == ProviderType.HUGGINGFACE_LOCAL:
@@ -86,7 +88,7 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             model_name=config.model or f"hf:{hf_model}",
             command=config.command
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "huggingface", "--model", hf_model],
-            env=config.env,
+            env={**runtime_env, **config.env},
             timeout_seconds=_timeout(config, 600),
         )
     raise ValueError(f"Unsupported provider type: {config.type}")

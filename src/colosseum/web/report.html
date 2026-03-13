@@ -18,10 +18,12 @@
     </div>
   </header>
 
+  <!-- Run metrics strip -->
   <section id="report-hero" class="panel report-hero">
     <div id="hero-content" class="muted">Loading run artifact...</div>
   </section>
 
+  <!-- Human judge console (only shown while awaiting judgment) -->
   <section id="human-judge-panel" class="panel hidden">
     <h2 class="panel-title">Judge Console</h2>
     <div id="human-judge-copy" class="report-copy"></div>
@@ -54,25 +56,54 @@
     <button id="judge-submit-btn" class="btn-gold">Submit Judge Action</button>
   </section>
 
-  <section id="final-report-section" class="panel hidden">
-    <h2 class="panel-title">Executive Report</h2>
-    <div id="final-report-content"></div>
+  <!-- ═══════════════════════════════════════════
+       토론의 결론 — Debate Conclusion
+       Main section: verdict + report + agent opinions
+  ═══════════════════════════════════════════ -->
+  <section id="debate-conclusion" class="panel hidden">
+    <h2 class="panel-title">토론의 결론</h2>
+
+    <!-- One-line headline verdict -->
+    <div id="conclusion-headline" class="conclusion-headline hidden"></div>
+
+    <!-- Hallucination warnings (shown if flags exist) -->
+    <div id="hallucination-section" class="hidden">
+      <div class="hallucination-warning-header">
+        <span class="hallucination-icon">⚠</span> Credibility Alerts
+      </div>
+      <div id="hallucination-list"></div>
+    </div>
+
+    <!-- Verdict banner -->
+    <div id="verdict-banner-section"></div>
+
+    <!-- Final report: executive summary + conclusions + recommendations -->
+    <div id="final-report-content" class="conclusion-report-grid"></div>
+
+    <!-- Per-agent opinion breakdown -->
+    <div id="agent-opinions" class="hidden">
+      <h3 class="conclusion-subheader">각 에이전트 의견 요약</h3>
+      <div id="agent-opinions-grid" class="agent-opinions-grid"></div>
+    </div>
   </section>
 
-  <section id="plans-report" class="panel hidden">
-    <h2 class="panel-title">Opening Reports</h2>
+  <!-- ═══════════════════════════════════════════
+       Collapsible detail sections
+  ═══════════════════════════════════════════ -->
+  <details id="plans-report" class="panel panel-collapsible hidden">
+    <summary class="panel-title collapsible-summary">Opening Reports <span class="collapsible-hint">▸</span></summary>
     <div id="report-plans-grid" class="plans-grid"></div>
-  </section>
+  </details>
 
-  <section id="timeline-report" class="panel hidden">
-    <h2 class="panel-title">Issue Timeline</h2>
+  <details id="timeline-report" class="panel panel-collapsible hidden">
+    <summary class="panel-title collapsible-summary">Debate Timeline <span class="collapsible-hint">▸</span></summary>
     <div id="report-timeline" class="report-timeline"></div>
-  </section>
+  </details>
 
-  <section id="usage-report" class="panel hidden">
-    <h2 class="panel-title">Usage Report</h2>
+  <details id="usage-report" class="panel panel-collapsible hidden">
+    <summary class="panel-title collapsible-summary">Usage Report <span class="collapsible-hint">▸</span></summary>
     <div id="report-usage-grid" class="usage-grid"></div>
-  </section>
+  </details>
 
   <section id="events-report" class="panel hidden">
     <h2 class="panel-title">Runtime Notices</h2>

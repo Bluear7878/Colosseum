@@ -146,6 +146,28 @@ class JudgeService:
             adopted.append(candidate)
             adopted_agents.add(candidate.agent_id)
 
+        # Hallucination detection: flag agents whose claims lack evidence backing
+        hallucination_flags: list[str] = []
+        agent_names = {a.agent_id: a.display_name for a in run.agents}
+        for msg in debate_round.messages:
+            agent_name = agent_names.get(msg.agent_id, msg.agent_id)
+            all_claims = list(msg.critique_points) + list(msg.defense_points)
+            if not all_claims:
+                continue
+            unsupported = [c for c in all_claims if not c.evidence]
+            total = len(all_claims)
+            unsupported_ratio = len(unsupported) / total if total > 0 else 0
+            if unsupported_ratio >= 0.6 and total >= 2:
+                hallucination_flags.append(
+                    f"{agent_name}: {len(unsupported)} of {total} claim(s) carry no cited evidence — "
+                    "assertions may be inference or fabrication rather than grounded in the frozen context."
+                )
+            elif unsupported_ratio == 1.0 and total >= 1:
+                hallucination_flags.append(
+                    f"{agent_name}: no evidence cited for any claim in this round — "
+                    "all arguments should be treated as unverified until grounded in the frozen context."
+                )
+
         unresolved = debate_round.summary.unresolved_questions[:3]
         if adopted:
             adopted_labels = ", ".join(
@@ -179,6 +201,7 @@ class JudgeService:
             unresolved_points=unresolved,
             judge_note=judge_note,
             moved_to_next_issue=moved_to_next_issue,
+            hallucination_flags=hallucination_flags,
         )
 
     def _automated_decide(self, run: ExperimentRun) -> JudgeDecision:
@@ -299,7 +322,12 @@ class JudgeService:
             "(4) budget pressure. "
             "Decide: continue_debate if agents are still producing relevant new evidence grounded in this task; "
             "finalize if arguments are drifting off-topic, repeating without new evidence, or budget is high. "
-            "Your agenda and focus areas must be directly relevant to the debate topic above."
+            "Your agenda and focus areas must be directly relevant to the debate topic above. "
+            "Hallucination check: for each agent, assess whether specific facts, numbers, named tools, "
+            "or technical details in their arguments are actually grounded in the frozen context bundle. "
+            "Flag any agent that states precise claims (e.g., specific percentages, library names, "
+            "architectural specifics) without citing a source from the context — these are likely hallucinated. "
+            "Lower that agent's credibility and note the concern in your reasoning."
         )
         if run.response_language and run.response_language != "auto":
             judge_instructions += (
@@ -371,27 +399,23 @@ class JudgeService:
             if second_plan
             else 0.0
         )
-        close_scores = second_plan is not None and abs(top_score - second_score) < 0.1
-
-        if close_scores and run.judge.prefer_merged_plan_on_close_scores:
-            synthesized_plan = self._build_merged_plan(top_plan, second_plan)
-            return JudgeVerdict(
-                judge_mode=run.judge.mode,
-                verdict_type=VerdictType.MERGED,
-                winning_plan_ids=[top_plan.plan_id, second_plan.plan_id],
-                synthesized_plan=synthesized_plan,
-                rationale="Top plans are close in quality, so a merged plan captures complementary strengths.",
-                selected_strengths=list(dict.fromkeys(top_plan.strengths[:2] + second_plan.strengths[:2])),
-                rejected_risks=[risk.title for risk in synthesized_plan.risks],
-                stop_reason=decision.reasoning if decision else "judge_finalize",
-                confidence=max(0.74, top_score),
+        # Always declare a single winner — the report synthesizer handles comprehensive summary.
+        margin = round(top_score - (second_score if second_plan else 0.0), 3)
+        if margin < 0.05 and second_plan:
+            rationale = (
+                f"{top_plan.display_name} edges out the competition by a narrow margin "
+                f"(score gap: {margin:.3f}). "
+                f"The final report captures the strongest ideas from all participants."
             )
-
+        else:
+            rationale = (
+                f"{top_plan.display_name} produced the strongest evidence-backed plan for this task."
+            )
         return JudgeVerdict(
             judge_mode=run.judge.mode,
             verdict_type=VerdictType.WINNER,
             winning_plan_ids=[top_plan.plan_id],
-            rationale=f"{top_plan.display_name} produced the strongest plan under the current evaluation rubric.",
+            rationale=rationale,
             selected_strengths=top_plan.strengths[:4],
             rejected_risks=[risk.title for risk in top_plan.risks[:3]],
             stop_reason=decision.reasoning if decision else "judge_finalize",
@@ -403,51 +427,64 @@ class JudgeService:
         run: ExperimentRun,
         decision: JudgeDecision | None,
     ) -> JudgeVerdict | None:
-        image_inputs = self._image_inputs(run)
-        synthesis_instructions = (
-            f"You are producing the final verdict for a debate on: '{run.task.title}'. "
+        plan_summaries = "\n".join(
+            f"- [{p.plan_id[:8]}] {p.display_name}: {p.summary[:200]}"
+            for p in run.plans
+        )
+        lang = run.response_language if run.response_language and run.response_language != "auto" else ""
+        lang_prefix = (
+            f"MANDATORY LANGUAGE: Write ALL content in {lang}. Every field must be in {lang}.\n\n"
+            if lang else ""
+        )
+        instructions = (
+            f"{lang_prefix}"
+            f"You are the judge for a debate on: '{run.task.title}'. "
             f"Problem: {run.task.problem_statement}. "
             f"Success criteria: {run.task.success_criteria}. "
-            "Synthesize the strongest evidence-backed ideas from all agents into a final plan "
-            "strictly focused on this task. "
-            "Select only what directly addresses the problem statement and success criteria above. "
-            "Do not include generic content unrelated to this specific task."
+            f"\n\nParticipating plans:\n{plan_summaries}\n\n"
+            "Select EXACTLY ONE winning plan — the one with the strongest evidence-backed arguments "
+            "for this specific task. There must always be a single winner. "
+            "Return JSON with: winning_plan_id (str, the plan_id of the winner), "
+            "rationale (str, 2-3 sentences on why this plan wins), "
+            "selected_strengths (list[str], top 3-4 strengths of the winner), "
+            "rejected_risks (list[str], risks that were mitigated or rejected)."
+            + (f"\n\nREMINDER: Write in {lang}." if lang else "")
         )
-        if run.response_language and run.response_language != "auto":
-            synthesis_instructions += (
-                f" MANDATORY: Write ALL content — every field, every sentence — in {run.response_language}. "
-                "No other language is permitted under any circumstances."
-            )
         execution = await self.provider_runtime.execute(
             run=run,
-            actor_id="judge:synthesis",
+            actor_id="judge:finalize",
             actor_label="AI Judge",
             provider_config=run.judge.provider,
-            operation="synthesis",
-            instructions=synthesis_instructions,
+            operation="judge",
+            instructions=instructions,
             metadata={
                 "run_id": run.run_id,
-                "basis_plan_ids": [plan.plan_id for plan in run.plans[:2]],
-                "image_inputs": image_inputs,
-                "image_summary": self._image_summary(image_inputs),
-                "evidence_policy": build_evidence_policy(run.encourage_internet_search),
-                "encourage_internet_search": run.encourage_internet_search,
-                "search_policy": build_evidence_policy(run.encourage_internet_search),
+                "task_title": run.task.title,
+                "response_language": run.response_language,
             },
         )
         result = execution.result
         payload = result.json_payload
         if not payload:
             return None
-        synthesized = self._payload_to_plan(payload, run)
+        winning_id = str(payload.get("winning_plan_id", ""))
+        if not winning_id:
+            # Fall back to first plan if AI didn't return a valid id
+            winning_id = run.plans[0].plan_id if run.plans else ""
+        # Validate the id exists in plans
+        valid_ids = {p.plan_id for p in run.plans}
+        # Try prefix match if exact match fails
+        if winning_id not in valid_ids:
+            matched = next((p.plan_id for p in run.plans if p.plan_id.startswith(winning_id)), None)
+            winning_id = matched or (run.plans[0].plan_id if run.plans else winning_id)
+        winner = next((p for p in run.plans if p.plan_id == winning_id), run.plans[0] if run.plans else None)
         return JudgeVerdict(
             judge_mode=JudgeMode.AI,
-            verdict_type=VerdictType.MERGED if synthesized else VerdictType.WINNER,
-            winning_plan_ids=[plan.plan_id for plan in run.plans[:2]],
-            synthesized_plan=synthesized,
-            rationale=decision.reasoning if decision else "AI judge synthesized the final plan.",
-            selected_strengths=synthesized.strengths if synthesized else [],
-            rejected_risks=[risk.title for risk in synthesized.risks] if synthesized else [],
+            verdict_type=VerdictType.WINNER,
+            winning_plan_ids=[winning_id],
+            rationale=str(payload.get("rationale", decision.reasoning if decision else "AI judge selected the winner.")),
+            selected_strengths=[str(s) for s in payload.get("selected_strengths", winner.strengths[:3] if winner else [])],
+            rejected_risks=[str(r) for r in payload.get("rejected_risks", [])],
             stop_reason=decision.reasoning if decision else "ai_judge_finalize",
             confidence=decision.confidence if decision else 0.75,
         )

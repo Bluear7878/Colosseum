@@ -98,6 +98,8 @@ function syncJudgeForm() {
   }
 }
 
+// ─── Hero: status + run metrics ─────────────────────────────────────────────
+
 function renderHero(run) {
   var title = document.getElementById("report-subtitle");
   if (title) {
@@ -106,12 +108,6 @@ function renderHero(run) {
 
   var el = document.getElementById("hero-content");
   if (!el) return;
-
-  var verdict = run.verdict;
-  var winnerNames = (verdict && verdict.winning_plan_ids || []).map(function(id) {
-    var match = (run.plans || []).find(function(plan) { return plan.plan_id === id; });
-    return match ? match.display_name : id.slice(0, 8);
-  });
 
   var statusCopy = {
     completed: "Battle complete",
@@ -122,35 +118,89 @@ function renderHero(run) {
     pending: "Pending"
   };
 
-  var html = '<div class="report-hero-top">' +
-    '<div>' +
-      '<div class="eyebrow">Status</div>' +
-      '<h2 class="report-title">' + esc(statusCopy[run.status] || run.status) + '</h2>' +
-      '<p class="report-copy">' + esc(run.stop_reason || (verdict ? verdict.rationale : "The report shows the full plan comparison, issue-by-issue debate, and judge adoptions.")) + '</p>' +
-    '</div>' +
-    '<div class="hero-metrics">' +
-      '<div class="hero-metric"><span class="hero-metric-label">Agents</span><strong>' + (run.agents || []).length + '</strong></div>' +
-      '<div class="hero-metric"><span class="hero-metric-label">Rounds</span><strong>' + (run.debate_rounds || []).length + '</strong></div>' +
-      '<div class="hero-metric"><span class="hero-metric-label">Tokens</span><strong>' + (((run.budget_ledger || {}).total || {}).total_tokens || 0).toLocaleString() + '</strong></div>' +
-    '</div>' +
+  el.innerHTML =
+    '<div class="report-hero-top">' +
+      '<div>' +
+        '<div class="eyebrow">Status</div>' +
+        '<h2 class="report-title">' + esc(statusCopy[run.status] || run.status) + '</h2>' +
+        (run.stop_reason ? '<p class="report-copy muted">' + esc(run.stop_reason) + '</p>' : '') +
+      '</div>' +
+      '<div class="hero-metrics">' +
+        '<div class="hero-metric"><span class="hero-metric-label">Agents</span><strong>' + (run.agents || []).length + '</strong></div>' +
+        '<div class="hero-metric"><span class="hero-metric-label">Rounds</span><strong>' + (run.debate_rounds || []).length + '</strong></div>' +
+        '<div class="hero-metric"><span class="hero-metric-label">Tokens</span><strong>' + (((run.budget_ledger || {}).total || {}).total_tokens || 0).toLocaleString() + '</strong></div>' +
+      '</div>' +
     '</div>';
+}
 
-  if (verdict) {
-    html += '<div class="report-verdict-banner">' +
-      '<span class="verdict-type ' + esc(verdict.verdict_type || "winner") + '">' + esc((verdict.verdict_type || "winner").toUpperCase()) + '</span>' +
-      '<div class="report-verdict-main">' + esc(winnerNames.join(" + ") || "No winner") + '</div>' +
-      '<div class="report-verdict-sub">' + esc(verdict.rationale || "") + '</div>' +
-      '<div class="report-verdict-meta">Confidence ' + fmt(verdict.confidence) + ' · Stop reason: ' + esc(verdict.stop_reason || "n/a") + '</div>' +
-      '</div>';
-  } else if (run.status === "awaiting_human_judge" && run.human_judge_packet) {
-    html += '<div class="report-verdict-banner pending">' +
-      '<span class="verdict-type pending">HUMAN JUDGE</span>' +
-      '<div class="report-verdict-main">Choose the next issue or finalize</div>' +
-      '<div class="report-verdict-sub">' + esc(run.human_judge_packet.recommended_action || "") + '</div>' +
-      '</div>';
+// ─── Debate Conclusion ───────────────────────────────────────────────────────
+
+function renderDebateConclusion(run) {
+  var fr = run.final_report;
+  var verdict = run.verdict;
+
+  if (!verdict && !fr) return;
+  show("debate-conclusion");
+
+  // One-line verdict headline
+  var headlineText = (fr && fr.one_line_verdict) || "";
+  if (!headlineText && verdict) {
+    var winnerName = winnerDisplayName(run);
+    headlineText = winnerName
+      ? winnerName + " wins — " + (verdict.rationale || "")
+      : (verdict.rationale || "");
+  }
+  if (headlineText) {
+    var headlineEl = document.getElementById("conclusion-headline");
+    if (headlineEl) {
+      headlineEl.textContent = headlineText;
+      headlineEl.classList.remove("hidden");
+    }
   }
 
-  el.innerHTML = html;
+  // Hallucination warnings
+  renderHallucinationWarnings(run);
+
+  // Verdict banner
+  renderVerdictBanner(run);
+
+  // Final report cards
+  renderFinalReport(run);
+
+  // Per-agent opinions
+  renderAgentOpinions(run);
+}
+
+function winnerDisplayName(run) {
+  var verdict = run.verdict;
+  if (!verdict || !verdict.winning_plan_ids || !verdict.winning_plan_ids.length) return "";
+  var wid = verdict.winning_plan_ids[0];
+  var match = (run.plans || []).find(function(p) { return p.plan_id === wid; });
+  return match ? match.display_name : wid.slice(0, 8);
+}
+
+function renderVerdictBanner(run) {
+  var el = document.getElementById("verdict-banner-section");
+  if (!el) return;
+
+  var verdict = run.verdict;
+  if (verdict) {
+    var winnerName = winnerDisplayName(run);
+    el.innerHTML =
+      '<div class="report-verdict-banner">' +
+        '<span class="verdict-type ' + esc(verdict.verdict_type || "winner") + '">' + esc((verdict.verdict_type || "winner").toUpperCase()) + '</span>' +
+        '<div class="report-verdict-main">' + esc(winnerName || "No winner") + '</div>' +
+        '<div class="report-verdict-sub">' + esc(verdict.rationale || "") + '</div>' +
+        '<div class="report-verdict-meta">Confidence ' + fmt(verdict.confidence) + '</div>' +
+      '</div>';
+  } else if (run.status === "awaiting_human_judge" && run.human_judge_packet) {
+    el.innerHTML =
+      '<div class="report-verdict-banner pending">' +
+        '<span class="verdict-type pending">HUMAN JUDGE</span>' +
+        '<div class="report-verdict-main">Choose the next issue or finalize</div>' +
+        '<div class="report-verdict-sub">' + esc((run.human_judge_packet || {}).recommended_action || "") + '</div>' +
+      '</div>';
+  }
 }
 
 function renderFinalReport(run) {
@@ -158,24 +208,162 @@ function renderFinalReport(run) {
   if (!el || !run.final_report) return;
   var fr = run.final_report;
   var html = '';
+
   if (fr.executive_summary) {
-    html += '<div class="report-side-block"><h4>Summary</h4><p class="report-copy">' + esc(fr.executive_summary) + '</p></div>';
-  }
-  if (fr.key_conclusions && fr.key_conclusions.length) {
-    html += plainList("Key Conclusions", fr.key_conclusions, "strengths");
+    html += '<div class="conclusion-card conclusion-card-full">' +
+      '<div class="conclusion-card-label">판사의 종합 판결</div>' +
+      '<p class="report-copy">' + esc(fr.executive_summary) + '</p>' +
+    '</div>';
   }
   if (fr.verdict_explanation) {
-    html += '<div class="report-side-block"><h4>Verdict Explanation</h4><p class="report-copy">' + esc(fr.verdict_explanation) + '</p></div>';
+    html += '<div class="conclusion-card">' +
+      '<div class="conclusion-card-label">판결 근거</div>' +
+      '<p class="report-copy">' + esc(fr.verdict_explanation) + '</p>' +
+    '</div>';
+  }
+  if (fr.key_conclusions && fr.key_conclusions.length) {
+    html += '<div class="conclusion-card">' +
+      '<div class="conclusion-card-label">핵심 결론</div>' +
+      list(fr.key_conclusions) +
+    '</div>';
   }
   if (fr.debate_highlights && fr.debate_highlights.length) {
-    html += plainList("Debate Highlights", fr.debate_highlights, "architecture");
+    html += '<div class="conclusion-card">' +
+      '<div class="conclusion-card-label">토론 하이라이트</div>' +
+      list(fr.debate_highlights) +
+    '</div>';
   }
   if (fr.recommendations && fr.recommendations.length) {
-    html += plainList("Recommendations", fr.recommendations, "implementation");
+    html += '<div class="conclusion-card">' +
+      '<div class="conclusion-card-label">권고사항</div>' +
+      list(fr.recommendations) +
+    '</div>';
   }
+
   el.innerHTML = html;
-  show("final-report-section");
 }
+
+// ─── Per-agent opinion breakdown ─────────────────────────────────────────────
+
+function renderAgentOpinions(run) {
+  var rounds = run.debate_rounds || [];
+  var agents = run.agents || [];
+  if (!rounds.length || !agents.length) return;
+
+  // Build per-agent adopted arguments map
+  var adopted = {}; // agent_id -> list of { summary, round }
+  var agentNames = {};
+  agents.forEach(function(a) {
+    agentNames[a.agent_id] = a.display_name;
+    adopted[a.agent_id] = [];
+  });
+
+  // Collect raised claims per message, and which messages had adoptions
+  var adoptedMsgIds = {}; // message_id -> true
+  rounds.forEach(function(round) {
+    var adj = round.adjudication || {};
+    (adj.adopted_arguments || []).forEach(function(arg) {
+      if (adopted[arg.agent_id] !== undefined) {
+        adopted[arg.agent_id].push({ summary: arg.summary, round: round.index, kind: arg.claim_kind });
+      }
+      adoptedMsgIds[arg.source_message_id] = true;
+    });
+  });
+
+  // Build per-agent not-adopted claims
+  var notAdopted = {}; // agent_id -> list of { text, round }
+  agents.forEach(function(a) { notAdopted[a.agent_id] = []; });
+  rounds.forEach(function(round) {
+    (round.messages || []).forEach(function(msg) {
+      if (!notAdopted[msg.agent_id] && !adopted[msg.agent_id]) return;
+      // Only show claims from messages that had no adoptions
+      if (adoptedMsgIds[msg.message_id]) return;
+      var claims = (msg.critique_points || []).concat(msg.defense_points || []);
+      claims.slice(0, 2).forEach(function(claim) {
+        if (notAdopted[msg.agent_id]) {
+          notAdopted[msg.agent_id].push({ text: claim.text || String(claim), round: round.index });
+        }
+      });
+    });
+  });
+
+  var hasOpinions = agents.some(function(a) {
+    return adopted[a.agent_id].length > 0 || notAdopted[a.agent_id].length > 0;
+  });
+  if (!hasOpinions) return;
+
+  var winnerIds = (run.verdict && run.verdict.winning_plan_ids) ? run.verdict.winning_plan_ids : [];
+
+  var html = agents.map(function(agent) {
+    var isWinner = winnerIds.indexOf(agent.plan_id) !== -1;
+    // Find the plan for this agent
+    var plan = (run.plans || []).find(function(p) { return p.agent_id === agent.agent_id; });
+    var planId = plan ? plan.plan_id : "";
+    isWinner = winnerIds.indexOf(planId) !== -1;
+
+    var adoptedArgs = adopted[agent.agent_id] || [];
+    var notAdoptedArgs = notAdopted[agent.agent_id] || [];
+
+    var adoptedHtml = adoptedArgs.length
+      ? '<div class="agent-opinion-section adopted-section">' +
+          '<div class="agent-opinion-section-label adopted-label">채택됨 (' + adoptedArgs.length + ')</div>' +
+          '<ul>' + adoptedArgs.map(function(a) {
+            return '<li><span class="adopted-tag">' + esc(a.kind || '') + '</span> ' + esc(a.summary) + ' <span class="muted">R' + a.round + '</span></li>';
+          }).join('') + '</ul>' +
+        '</div>'
+      : '<div class="agent-opinion-section adopted-section"><div class="agent-opinion-section-label muted">채택된 의견 없음</div></div>';
+
+    var notAdoptedHtml = notAdoptedArgs.length
+      ? '<div class="agent-opinion-section not-adopted-section">' +
+          '<div class="agent-opinion-section-label not-adopted-label">미채택 (' + notAdoptedArgs.length + ')</div>' +
+          '<ul class="muted">' + notAdoptedArgs.slice(0, 3).map(function(a) {
+            return '<li>' + esc(a.text) + ' <span class="muted">R' + a.round + '</span></li>';
+          }).join('') + '</ul>' +
+        '</div>'
+      : '';
+
+    return '<div class="agent-opinion-card' + (isWinner ? ' agent-opinion-winner' : '') + '">' +
+      '<div class="agent-opinion-head">' +
+        '<span class="agent-badge">' + esc(agent.display_name) + '</span>' +
+        (isWinner ? '<span class="winner-crown">👑 Winner</span>' : '') +
+      '</div>' +
+      adoptedHtml +
+      notAdoptedHtml +
+    '</div>';
+  }).join('');
+
+  var grid = document.getElementById("agent-opinions-grid");
+  if (grid) {
+    grid.innerHTML = html;
+    show("agent-opinions");
+  }
+}
+
+// ─── Hallucination warnings ───────────────────────────────────────────────────
+
+function renderHallucinationWarnings(run) {
+  var rounds = run.debate_rounds || [];
+  var flags = [];
+  rounds.forEach(function(round) {
+    var adj = round.adjudication || {};
+    (adj.hallucination_flags || []).forEach(function(flag) {
+      flags.push({ round: round.index, flag: flag });
+    });
+  });
+  if (!flags.length) return;
+
+  var list = document.getElementById("hallucination-list");
+  if (!list) return;
+  list.innerHTML = flags.map(function(f) {
+    return '<div class="hallucination-flag">' +
+      '<span class="hallucination-round">Round ' + f.round + '</span> ' +
+      esc(f.flag) +
+    '</div>';
+  }).join('');
+  show("hallucination-section");
+}
+
+// ─── Plans (collapsible) ──────────────────────────────────────────────────────
 
 function renderPlans(run) {
   var el = document.getElementById("report-plans-grid");
@@ -200,6 +388,8 @@ function renderPlans(run) {
   }).join("");
   show("plans-report");
 }
+
+// ─── Timeline (collapsible) ───────────────────────────────────────────────────
 
 function renderTimeline(run) {
   var el = document.getElementById("report-timeline");
@@ -252,6 +442,16 @@ function renderTimeline(run) {
         }).join("") + '</div>'
       : '<p class="muted">No argument was formally adopted in this round.</p>';
 
+    // Hallucination flags for this round
+    var flagsHtml = (adjudication.hallucination_flags || []).length
+      ? '<div class="report-side-block">' +
+          '<h4>Credibility Alerts</h4>' +
+          (adjudication.hallucination_flags || []).map(function(f) {
+            return '<div class="hallucination-flag">' + esc(f) + '</div>';
+          }).join('') +
+        '</div>'
+      : '';
+
     return '<section class="report-round">' +
       '<div class="report-round-head">' +
         '<div>' +
@@ -272,12 +472,15 @@ function renderTimeline(run) {
             plainList("Unresolved", adjudication.unresolved_points || (round.summary || {}).unresolved_questions || []) +
           '</div>' +
           (adjudication.resolution ? '<div class="report-side-block"><h4>Judge resolution</h4><p class="report-copy">' + esc(adjudication.resolution) + '</p><p class="muted">' + esc(adjudication.judge_note || "") + '</p></div>' : '') +
+          flagsHtml +
         '</aside>' +
       '</div>' +
       '</section>';
   }).join("");
   show("timeline-report");
 }
+
+// ─── Usage ───────────────────────────────────────────────────────────────────
 
 function renderUsage(run) {
   var el = document.getElementById("report-usage-grid");
@@ -307,6 +510,8 @@ function renderUsage(run) {
   show("usage-report");
 }
 
+// ─── Events ──────────────────────────────────────────────────────────────────
+
 function renderEvents(run) {
   var el = document.getElementById("report-events-list");
   if (!el || !run.runtime_events || !run.runtime_events.length) return;
@@ -318,6 +523,8 @@ function renderEvents(run) {
   }).join("");
   show("events-report");
 }
+
+// ─── Human judge panel ───────────────────────────────────────────────────────
 
 function renderHumanPanel(run) {
   var panel = document.getElementById("human-judge-panel");
@@ -348,6 +555,82 @@ function renderHumanPanel(run) {
 
   syncJudgeForm();
   show("human-judge-panel");
+}
+
+// ─── PDF download ────────────────────────────────────────────────────────────
+
+function setupPdfDownload(run) {
+  var btn = document.getElementById("download-pdf-btn");
+  if (!btn) return;
+  if (run.status === "completed" || run.status === "failed") {
+    btn.classList.remove("hidden");
+    btn.onclick = function() {
+      btn.disabled = true;
+      btn.textContent = "Generating...";
+      fetch("/runs/" + encodeURIComponent(run.run_id) + "/pdf")
+        .then(function(r) {
+          if (!r.ok) throw new Error("PDF generation failed: " + r.status);
+          return r.blob();
+        })
+        .then(function(blob) {
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = "colosseum-report-" + run.run_id.slice(0, 8) + ".pdf";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        })
+        .catch(function(err) {
+          toast(err.message || "PDF download failed.");
+        })
+        .then(function() {
+          btn.disabled = false;
+          btn.textContent = "Download PDF";
+        });
+    };
+  } else {
+    btn.classList.add("hidden");
+  }
+}
+
+// ─── Master render ────────────────────────────────────────────────────────────
+
+function renderRun(run) {
+  hide("debate-conclusion");
+  hide("plans-report");
+  hide("timeline-report");
+  hide("usage-report");
+  hide("events-report");
+  renderHero(run);
+  renderHumanPanel(run);
+  renderDebateConclusion(run);
+  renderPlans(run);
+  renderTimeline(run);
+  renderUsage(run);
+  renderEvents(run);
+  setupPdfDownload(run);
+}
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+
+function loadRun() {
+  var runId = runIdFromPath();
+  if (!runId) {
+    toast("Missing run id.");
+    return;
+  }
+  api("/runs/" + encodeURIComponent(runId))
+    .then(function(run) {
+      renderRun(run);
+      document.getElementById("judge-submit-btn").onclick = function() {
+        submitJudgeAction(run.run_id);
+      };
+    })
+    .catch(function(err) {
+      document.getElementById("hero-content").innerHTML = '<div class="report-copy">Could not load run: ' + esc(err.message || "Unknown error") + '</div>';
+    });
 }
 
 function submitJudgeAction(runId) {
@@ -391,76 +674,6 @@ function submitJudgeAction(runId) {
     btn.disabled = false;
     btn.textContent = "Submit Judge Action";
   });
-}
-
-function setupPdfDownload(run) {
-  var btn = document.getElementById("download-pdf-btn");
-  if (!btn) return;
-  if (run.status === "completed" || run.status === "failed") {
-    btn.classList.remove("hidden");
-    btn.onclick = function() {
-      btn.disabled = true;
-      btn.textContent = "Generating...";
-      fetch("/runs/" + encodeURIComponent(run.run_id) + "/pdf")
-        .then(function(r) {
-          if (!r.ok) throw new Error("PDF generation failed: " + r.status);
-          return r.blob();
-        })
-        .then(function(blob) {
-          var url = URL.createObjectURL(blob);
-          var a = document.createElement("a");
-          a.href = url;
-          a.download = "colosseum-report-" + run.run_id.slice(0, 8) + ".pdf";
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        })
-        .catch(function(err) {
-          toast(err.message || "PDF download failed.");
-        })
-        .then(function() {
-          btn.disabled = false;
-          btn.textContent = "Download PDF";
-        });
-    };
-  } else {
-    btn.classList.add("hidden");
-  }
-}
-
-function renderRun(run) {
-  hide("final-report-section");
-  hide("plans-report");
-  hide("timeline-report");
-  hide("usage-report");
-  hide("events-report");
-  renderHero(run);
-  renderHumanPanel(run);
-  renderFinalReport(run);
-  renderPlans(run);
-  renderTimeline(run);
-  renderUsage(run);
-  renderEvents(run);
-  setupPdfDownload(run);
-}
-
-function loadRun() {
-  var runId = runIdFromPath();
-  if (!runId) {
-    toast("Missing run id.");
-    return;
-  }
-  api("/runs/" + encodeURIComponent(runId))
-    .then(function(run) {
-      renderRun(run);
-      document.getElementById("judge-submit-btn").onclick = function() {
-        submitJudgeAction(run.run_id);
-      };
-    })
-    .catch(function(err) {
-      document.getElementById("hero-content").innerHTML = '<div class="report-copy">Could not load run: ' + esc(err.message || "Unknown error") + '</div>';
-    });
 }
 
 document.getElementById("judge-action-select").addEventListener("change", syncJudgeForm);

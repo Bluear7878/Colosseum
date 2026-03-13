@@ -67,8 +67,10 @@ async def healthcheck() -> dict[str, str]:
 @router.get("/setup/status")
 async def setup_status() -> list[dict]:
     """Return install/auth status of all CLI provider tools."""
+    import asyncio
     from colosseum.cli import get_all_tool_statuses
-    return get_all_tool_statuses()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_all_tool_statuses)
 
 
 @router.get("/models")

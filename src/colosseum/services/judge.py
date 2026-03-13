@@ -196,6 +196,7 @@ class JudgeService:
 
         if (
             len(run.debate_rounds) == 0
+            and run.budget_policy.min_rounds <= 0
             and confidence >= run.judge.minimum_confidence_to_stop
             and evidence_support >= MIN_EVIDENCE_SUPPORT_TO_FINALIZE
         ):
@@ -253,7 +254,10 @@ class JudgeService:
             latest_round = run.debate_rounds[-1]
             average_novelty = mean(message.novelty_score for message in latest_round.messages) if latest_round.messages else 0.0
             convergence = self._convergence_score(latest_round)
-            if average_novelty < run.budget_policy.min_novelty_threshold or convergence >= run.budget_policy.convergence_threshold:
+            if (
+                len(run.debate_rounds) >= run.budget_policy.min_rounds
+                and (average_novelty < run.budget_policy.min_novelty_threshold or convergence >= run.budget_policy.convergence_threshold)
+            ):
                 return JudgeDecision(
                     mode=JudgeMode.AUTOMATED,
                     action=JudgeActionType.FINALIZE,

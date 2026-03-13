@@ -48,25 +48,30 @@ DEPTH_PROFILES = {
         "min_novelty_threshold": 0.05,
         "convergence_threshold": 0.40,
         "minimum_confidence_to_stop": 0.55,
+        "min_rounds": 1,
     },
     2: {  # Brief — two rounds, moderate thresholds
         "min_novelty_threshold": 0.10,
         "convergence_threshold": 0.55,
         "minimum_confidence_to_stop": 0.65,
+        "min_rounds": 1,
     },
     3: {  # Standard — balanced debate
         "min_novelty_threshold": 0.18,
         "convergence_threshold": 0.75,
         "minimum_confidence_to_stop": 0.78,
+        "min_rounds": 1,
     },
     4: {  # Thorough — relaxed thresholds, more exploration
         "min_novelty_threshold": 0.25,
         "convergence_threshold": 0.85,
         "minimum_confidence_to_stop": 0.85,
+        "min_rounds": 2,
     },
     5: {  # Deep Dive — full sequence, very hard to stop early
         "min_novelty_threshold": 0.30,
         "convergence_threshold": 0.92,
         "minimum_confidence_to_stop": 0.92,
+        "min_rounds": 2,
     },
 }

@@ -393,6 +393,11 @@ async def create_run_stream(
             yield f"data: {json.dumps({'phase': 'judging', 'message': 'Rendering final verdict...'})}\n\n"
             last_decision = run.judge_trace[-1] if run.judge_trace else None
             run.verdict = await orchestrator.judge_service.finalize(run, last_decision)
+
+            # Phase: report synthesis
+            yield f"data: {json.dumps({'phase': 'synthesizing_report', 'message': 'Synthesizing executive report...'})}\n\n"
+            run.final_report = await orchestrator.report_synthesizer.synthesize(run)
+
             run.status = RunStatus.COMPLETED
             run.stop_reason = last_decision.reasoning if last_decision else "judge_finalize"
             run.updated_at = datetime.now(timezone.utc)
@@ -419,6 +424,11 @@ async def create_run_stream(
             for actor_id, usage in run.budget_ledger.by_actor.items():
                 budget_by_actor[actor_id] = {"total_tokens": usage.total_tokens, "prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens}
 
+            # Final report data
+            final_report_data = None
+            if run.final_report:
+                final_report_data = run.final_report.model_dump(mode="json")
+
             # Emit verdict + complete to event bus
             winner_names = []
             for wid in (v.winning_plan_ids if v else []):
@@ -431,7 +441,7 @@ async def create_run_stream(
             })
             bus.emit("phase", {"phase": "complete", "status": "completed"})
 
-            yield f"data: {json.dumps({'phase': 'complete', 'verdict': verdict_data, 'budget_total': run.budget_ledger.total.total_tokens, 'budget_by_actor': budget_by_actor})}\n\n"
+            yield f"data: {json.dumps({'phase': 'complete', 'verdict': verdict_data, 'budget_total': run.budget_ledger.total.total_tokens, 'budget_by_actor': budget_by_actor, 'final_report': final_report_data})}\n\n"
 
         except Exception as exc:
             tb = traceback.format_exc()

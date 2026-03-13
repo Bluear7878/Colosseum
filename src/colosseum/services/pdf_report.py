@@ -177,6 +177,33 @@ def generate_pdf(run: ExperimentRun) -> bytes:
             pdf.body_text(v.synthesized_plan.summary)
 
     # ════════════════════════════════════════
+    # Executive Report
+    # ════════════════════════════════════════
+    if run.final_report:
+        pdf.add_page()
+        pdf.section_title("Executive Report")
+
+        fr = run.final_report
+        pdf.sub_title("Summary")
+        pdf.body_text(fr.executive_summary)
+
+        if fr.key_conclusions:
+            pdf.sub_title("Key Conclusions")
+            pdf.bullet_list(fr.key_conclusions)
+
+        if fr.verdict_explanation:
+            pdf.sub_title("Verdict Explanation")
+            pdf.body_text(fr.verdict_explanation)
+
+        if fr.debate_highlights:
+            pdf.sub_title("Debate Highlights")
+            pdf.bullet_list(fr.debate_highlights)
+
+        if fr.recommendations:
+            pdf.sub_title("Recommendations")
+            pdf.bullet_list(fr.recommendations)
+
+    # ════════════════════════════════════════
     # Task Description
     # ════════════════════════════════════════
     pdf.add_page()

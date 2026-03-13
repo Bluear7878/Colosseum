@@ -22,6 +22,7 @@ from colosseum.services.debate import DebateEngine
 from colosseum.services.judge import JudgeService
 from colosseum.services.normalizers import ResponseNormalizer
 from colosseum.services.provider_runtime import ProviderRuntimeService
+from colosseum.services.report_synthesizer import ReportSynthesizer
 from colosseum.services.repository import FileRunRepository
 from colosseum.core.config import build_evidence_policy
 
@@ -36,6 +37,7 @@ class ColosseumOrchestrator:
         budget_manager: BudgetManager,
         normalizer: ResponseNormalizer,
         provider_runtime: ProviderRuntimeService,
+        report_synthesizer: ReportSynthesizer | None = None,
     ) -> None:
         self.repository = repository
         self.context_service = context_service
@@ -44,6 +46,7 @@ class ColosseumOrchestrator:
         self.budget_manager = budget_manager
         self.normalizer = normalizer
         self.provider_runtime = provider_runtime
+        self.report_synthesizer = report_synthesizer or ReportSynthesizer(provider_runtime)
 
     async def create_run(self, request: RunCreateRequest) -> ExperimentRun:
         self.provider_runtime.validate_agents_selectable(request.agents)
@@ -138,6 +141,7 @@ class ColosseumOrchestrator:
                 stop_reason="human_selected_winner",
                 confidence=1.0,
             )
+            run.final_report = await self.report_synthesizer.synthesize(run)
             run.status = RunStatus.COMPLETED
             run.stop_reason = "human_selected_winner"
 
@@ -159,6 +163,7 @@ class ColosseumOrchestrator:
                 stop_reason="human_merged_plans",
                 confidence=1.0,
             )
+            run.final_report = await self.report_synthesizer.synthesize(run)
             run.status = RunStatus.COMPLETED
             run.stop_reason = "human_merged_plans"
 
@@ -358,6 +363,7 @@ class ColosseumOrchestrator:
 
             if decision.action == JudgeActionType.FINALIZE:
                 run.verdict = await self.judge_service.finalize(run, decision)
+                run.final_report = await self.report_synthesizer.synthesize(run)
                 run.status = RunStatus.COMPLETED
                 run.stop_reason = decision.reasoning
                 self._touch(run)

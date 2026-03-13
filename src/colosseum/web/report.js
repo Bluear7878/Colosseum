@@ -153,6 +153,30 @@ function renderHero(run) {
   el.innerHTML = html;
 }
 
+function renderFinalReport(run) {
+  var el = document.getElementById("final-report-content");
+  if (!el || !run.final_report) return;
+  var fr = run.final_report;
+  var html = '';
+  if (fr.executive_summary) {
+    html += '<div class="report-side-block"><h4>Summary</h4><p class="report-copy">' + esc(fr.executive_summary) + '</p></div>';
+  }
+  if (fr.key_conclusions && fr.key_conclusions.length) {
+    html += plainList("Key Conclusions", fr.key_conclusions, "strengths");
+  }
+  if (fr.verdict_explanation) {
+    html += '<div class="report-side-block"><h4>Verdict Explanation</h4><p class="report-copy">' + esc(fr.verdict_explanation) + '</p></div>';
+  }
+  if (fr.debate_highlights && fr.debate_highlights.length) {
+    html += plainList("Debate Highlights", fr.debate_highlights, "architecture");
+  }
+  if (fr.recommendations && fr.recommendations.length) {
+    html += plainList("Recommendations", fr.recommendations, "implementation");
+  }
+  el.innerHTML = html;
+  show("final-report-section");
+}
+
 function renderPlans(run) {
   var el = document.getElementById("report-plans-grid");
   if (!el || !run.plans || !run.plans.length) return;
@@ -406,12 +430,14 @@ function setupPdfDownload(run) {
 }
 
 function renderRun(run) {
+  hide("final-report-section");
   hide("plans-report");
   hide("timeline-report");
   hide("usage-report");
   hide("events-report");
   renderHero(run);
   renderHumanPanel(run);
+  renderFinalReport(run);
   renderPlans(run);
   renderTimeline(run);
   renderUsage(run);

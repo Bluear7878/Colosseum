@@ -372,6 +372,7 @@ class PaidProviderPolicy(BaseModel):
 
 class BudgetPolicy(BaseModel):
     max_rounds: int = 3
+    min_rounds: int = 1
     total_token_budget: int = 120000
     per_round_token_limit: int = 12000
     per_agent_message_limit: int = 1
@@ -479,6 +480,14 @@ class RuntimeEvent(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class FinalReport(BaseModel):
+    executive_summary: str
+    key_conclusions: list[str] = Field(default_factory=list)
+    debate_highlights: list[str] = Field(default_factory=list)
+    verdict_explanation: str = ""
+    recommendations: list[str] = Field(default_factory=list)
+
+
 class ExperimentRun(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     project_name: str
@@ -500,6 +509,7 @@ class ExperimentRun(BaseModel):
     judge_trace: list[JudgeDecision] = Field(default_factory=list)
     runtime_events: list[RuntimeEvent] = Field(default_factory=list)
     verdict: JudgeVerdict | None = None
+    final_report: FinalReport | None = None
     stop_reason: str | None = None
     human_judge_packet: HumanJudgePacket | None = None
     error_message: str | None = None

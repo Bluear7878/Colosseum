@@ -895,11 +895,11 @@ var DEPTH_LABELS = {
   5: "Deep Dive"
 };
 var DEPTH_PROFILES = {
-  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55, planning_timeout: 240, round_timeout: 180, decay: 0.80 },
-  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65, planning_timeout: 300, round_timeout: 240, decay: 0.80 },
-  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78, planning_timeout: 360, round_timeout: 300, decay: 0.80 },
-  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85, planning_timeout: 420, round_timeout: 360, decay: 0.80 },
-  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92, planning_timeout: 480, round_timeout: 420, decay: 0.80 }
+  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55, planning_timeout: 240, round_timeout: 180, decay: 0.80, min_rounds: 1 },
+  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65, planning_timeout: 300, round_timeout: 240, decay: 0.80, min_rounds: 1 },
+  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78, planning_timeout: 360, round_timeout: 300, decay: 0.80, min_rounds: 1 },
+  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85, planning_timeout: 420, round_timeout: 360, decay: 0.80, min_rounds: 2 },
+  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92, planning_timeout: 480, round_timeout: 420, decay: 0.80, min_rounds: 2 }
 };
 var planningTimeoutInput = document.getElementById("planning-timeout");
 var planningNolimit = document.getElementById("planning-nolimit");
@@ -1736,6 +1736,7 @@ function buildPayload() {
       });
       return {
         max_rounds: depth,
+        min_rounds: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).min_rounds,
         total_token_budget: 80000,
         per_round_token_limit: 12000,
         per_agent_message_limit: 1,
@@ -1958,11 +1959,15 @@ function handleSSEEvent(evt) {
   } else if (phase === "judging") {
     appendLiveEntry(evt.message || "Rendering final verdict...", "verdict");
     setBattleNote("Judge is synthesizing the final verdict and usage report...", true);
+  } else if (phase === "synthesizing_report") {
+    appendLiveEntry(evt.message || "Synthesizing executive report...", "verdict");
+    setBattleNote("Generating executive report...", true);
   } else if (phase === "complete") {
     skipRoundBtn.classList.add("hidden");
     cancelDebateBtn.classList.add("hidden");
     liveRunData.verdict = evt.verdict || null;
     liveRunData.budget_by_actor = evt.budget_by_actor || {};
+    liveRunData.final_report = evt.final_report || null;
     appendLiveEntry("Debate complete!", "verdict");
     if (currentRunId) {
       setBattleNote("Battle finished. Opening the full report...", false);

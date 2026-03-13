@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Colosseum — AI Debate Arena</title>
+  <link rel="stylesheet" href="/static/styles.css"/>
+</head>
+<body>
+<main class="arena">
+  <header class="arena-header">
+    <h1>COLOSSEUM</h1>
+    <p class="tagline">Where AI models clash over evidence</p>
+  </header>
+
+  <!-- Setup -->
+  <section id="setup" class="panel">
+    <h2 class="panel-title">Prepare the Arena</h2>
+
+    <div class="topic-row">
+      <div class="topic-main">
+        <label class="label" for="topic">Debate Topic</label>
+        <textarea id="topic" class="arena-input" rows="2"
+          placeholder="Declare the topic these gladiators will debate..."></textarea>
+      </div>
+      <div class="topic-type-col">
+        <label class="label" for="topic-type">Topic Type</label>
+        <select id="topic-type" class="arena-input-sm">
+          <option value="research_design">Software Design</option>
+          <option value="general_debate">General Debate</option>
+          <option value="policy_analysis">Policy Analysis</option>
+          <option value="technical_review">Technical Review</option>
+          <option value="product_strategy">Product Strategy</option>
+          <option value="open_discussion">Open Discussion</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Codebase reference -->
+    <div class="codebase-section">
+      <label class="label" for="codebase-url">Codebase Reference (optional)</label>
+      <input id="codebase-url" class="arena-input-sm codebase-input"
+        placeholder="GitHub URL, local path, or any reference (e.g. https://github.com/org/repo or /path/to/project)"/>
+    </div>
+
+    <!-- File drop -->
+    <div class="file-section">
+      <label class="label">Context Files &amp; Images (optional)</label>
+      <div id="file-drop" class="file-drop">Drop text files or images here. Every participant receives the same frozen bundle.</div>
+      <input id="file-input" type="file" multiple hidden/>
+      <div id="file-list" class="file-list"></div>
+    </div>
+
+    <!-- Gladiator selection -->
+	    <label class="label">Choose Your Gladiators (select 2+)</label>
+	    <div id="gladiator-grid" class="gladiator-grid"></div>
+
+	    <div class="quota-panel">
+	      <div class="quota-panel-head">
+	        <div>
+	          <h3 class="quota-title">Paid Plan Tracker</h3>
+	          <p class="quota-copy">Manual local tracking for subscription-token windows. Set a limit to disable exhausted paid models before battle.</p>
+	        </div>
+	        <button id="quota-save" class="btn-gold btn-sm">Save quota settings</button>
+	      </div>
+	      <div id="quota-list" class="quota-list"></div>
+	      <div class="quota-actions">
+	        <label class="label" for="paid-depletion-action">When a paid plan runs out mid-battle</label>
+	        <div class="quota-controls">
+	          <select id="paid-depletion-action" class="arena-input-sm">
+	            <option value="switch_to_free">Switch to free fallback</option>
+	            <option value="wait_for_reset">Wait until reset</option>
+	            <option value="fail">Stop the run</option>
+	          </select>
+	          <select id="free-fallback-model" class="arena-input-sm"></select>
+	        </div>
+	        <p id="quota-policy-note" class="quota-help">
+	          Paid tracking is local to this Colosseum workspace. If you leave a provider untracked, Colosseum cannot disable it automatically.
+	        </p>
+	      </div>
+	    </div>
+
+	    <!-- Register CLI -->
+	    <div class="register-row">
+	      <button id="build-persona-btn" class="text-btn">+ Build my debate persona</button>
+	      <button id="add-cli-btn" class="text-btn">+ Bring your own model</button>
+	    </div>
+	    <div id="cli-form" class="cli-form hidden">
+	      <div class="cli-grid">
+	        <input id="cli-name" class="arena-input-sm" placeholder="Model name"/>
+	        <select id="cli-type" class="arena-input-sm">
+	          <option value="command">Custom CLI command</option>
+	          <option value="ollama">Custom Ollama model</option>
+	          <option value="huggingface_local">Custom local HF/Ollama model</option>
+	        </select>
+	        <select id="cli-tier" class="arena-input-sm">
+	          <option value="free">Free / local</option>
+	          <option value="paid">Paid / tracked</option>
+	        </select>
+	        <input id="cli-model-id" class="arena-input-sm" placeholder="Model id (e.g. my-model, org/model, qwen2.5:32b)"/>
+	        <input id="cli-cmd" class="arena-input-sm" placeholder="CLI command (e.g. /opt/my_model_cli --json)"/>
+	        <input id="cli-desc" class="arena-input-sm" placeholder="Short description (optional)"/>
+	        <input id="cli-quota-key" class="arena-input-sm" placeholder="Quota key (optional for paid models)"/>
+	      </div>
+	      <p id="cli-help" class="quota-help">Register a customer model as a debate participant. Paid custom models can use the same quota tracker.</p>
+	      <button id="cli-save" class="btn-gold btn-sm">Register</button>
+	    </div>
+    <div id="registered-list" class="registered-list"></div>
+
+    <!-- Depth, judge & mode -->
+    <div class="controls-row">
+      <div class="control-group">
+        <label class="label">Debate Depth</label>
+        <div class="depth-control">
+          <input id="depth" type="range" min="1" max="5" value="3" class="depth-slider"/>
+          <span id="depth-val" class="depth-val">3 rounds — Standard</span>
+        </div>
+      </div>
+      <div class="control-group">
+        <label class="label">Judge</label>
+        <div class="judge-toggle">
+          <button id="judge-auto" class="judge-btn active" data-judge="automated" title="AI evaluates plans and renders the final verdict automatically">AI Judge</button>
+          <button id="judge-human" class="judge-btn" data-judge="human" title="You review each round and decide when to stop, continue, or finalize">Human Judge</button>
+        </div>
+        <p id="judge-note" class="judge-note">AI will evaluate plans and render the verdict.</p>
+      </div>
+      <div class="control-group">
+        <label class="label">Mode</label>
+        <div class="mode-toggle">
+          <button id="mode-live" class="mode-btn active" data-mode="live">Watch Live</button>
+          <button id="mode-result" class="mode-btn" data-mode="result">Results Only</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="start-btn" class="btn-fight">FIGHT!</button>
+    <p id="battle-note" class="battle-note">
+      Live mode streams each phase. Every gladiator is expected to ground claims in the frozen evidence bundle. Results-only mode can stay quiet for 30-180 seconds with real CLI models.
+    </p>
+  </section>
+
+  <!-- Live debate feed -->
+  <section id="live-feed" class="panel debate-panel hidden">
+    <div class="debate-header">
+      <h2 class="panel-title">Live Debate</h2>
+      <button id="back-to-setup" class="text-btn">Back to Setup</button>
+    </div>
+    <div id="live-log" class="live-log debate-log"></div>
+  </section>
+
+  <!-- Plans -->
+  <section id="plans-sec" class="panel hidden">
+    <h2 class="panel-title">Opening Strategies</h2>
+    <div id="plans-grid" class="plans-grid"></div>
+  </section>
+
+  <!-- Debate -->
+  <section id="debate-sec" class="panel hidden">
+    <h2 class="panel-title">The Clash</h2>
+    <div id="debate-timeline" class="debate-timeline"></div>
+  </section>
+
+  <!-- Token usage -->
+	  <section id="usage-sec" class="panel hidden">
+	    <h2 class="panel-title">Resource Tally</h2>
+	    <div id="usage-grid" class="usage-grid"></div>
+	  </section>
+
+	  <section id="events-sec" class="panel hidden">
+	    <h2 class="panel-title">Arena Notices</h2>
+	    <div id="events-list" class="history-list"></div>
+	  </section>
+
+	  <!-- Verdict -->
+  <section id="verdict-sec" class="panel verdict-panel hidden">
+    <h2 class="panel-title">The Emperor's Verdict</h2>
+    <div id="verdict-body"></div>
+  </section>
+
+  <!-- History -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2 class="panel-title" style="margin-bottom:0">Past Battles</h2>
+      <button id="history-btn" class="text-btn">Load</button>
+    </div>
+    <div id="history-list" class="history-list">
+      <p class="muted">No battles fought yet.</p>
+    </div>
+  </section>
+  <!-- Persona Editor Modal -->
+	  <div id="persona-modal" class="modal hidden">
+	    <div class="modal-overlay"></div>
+	    <div class="modal-content">
+      <h3 id="persona-modal-title" class="modal-title">Custom Persona</h3>
+      <p class="modal-desc">Define this gladiator's debating personality in Markdown. Use the template below.</p>
+      <div id="persona-name-row" class="persona-name-row">
+        <input id="persona-name" class="arena-input-sm" placeholder="Persona name (e.g. Startup CTO)"/>
+      </div>
+      <textarea id="persona-editor" class="arena-input" rows="12"
+        placeholder="# My Custom Persona&#10;&#10;> One-line description of this persona&#10;&#10;## Your Role&#10;You are a... describe the character's background and perspective.&#10;&#10;## Debating Style&#10;- How this persona argues&#10;- What they prioritize&#10;- How they respond to opposing views&#10;&#10;## Core Principles&#10;- Fundamental belief 1&#10;- Fundamental belief 2"></textarea>
+      <div class="modal-actions">
+        <button id="persona-apply-btn" class="btn-gold btn-sm">Apply to Gladiator</button>
+        <button id="persona-save-server-btn" class="btn-save btn-sm">Save &amp; Apply</button>
+        <button id="persona-cancel" class="text-btn">Cancel</button>
+      </div>
+	    </div>
+	  </div>
+	  <div id="persona-builder-modal" class="modal hidden">
+	    <div class="modal-overlay"></div>
+	    <div class="modal-content">
+	      <h3 class="modal-title">Build My Debate Persona</h3>
+	      <p class="modal-desc">Quick profile first. Colosseum will draft a reusable debate persona in Markdown and open it in the editor.</p>
+	      <input id="builder-persona-name" class="arena-input-sm builder-input" placeholder="Persona name (optional)"/>
+	      <input id="builder-profession" class="arena-input-sm builder-input" placeholder="Job / role (e.g. PM, founder, researcher)"/>
+	      <input id="builder-personality" class="arena-input-sm builder-input" placeholder="Personality (e.g. analytical, calm, skeptical)"/>
+	      <input id="builder-style" class="arena-input-sm builder-input" placeholder="Debate style (e.g. direct, collaborative, evidence-driven)"/>
+	      <textarea id="builder-notes" class="arena-input" rows="6"
+	        placeholder="Extra text about how you argue, what you care about, what annoys you in debates, non-negotiables, etc."></textarea>
+	      <div class="modal-actions">
+	        <button id="builder-generate-btn" class="btn-gold btn-sm">Generate Draft</button>
+	        <button id="builder-cancel" class="text-btn">Cancel</button>
+	      </div>
+	    </div>
+	  </div>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

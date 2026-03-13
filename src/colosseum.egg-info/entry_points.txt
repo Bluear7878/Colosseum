@@ -1,0 +1,3 @@
+[console_scripts]
+colosseum = colosseum.cli:main
+colosseum-api = colosseum.main:run

@@ -1,0 +1,387 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+
+from colosseum.core.models import (
+    ExperimentRun,
+    HumanJudgeActionRequest,
+    JudgeActionType,
+    JudgeMode,
+    JudgeVerdict,
+    RunListItem,
+    RunCreateRequest,
+    RunStatus,
+    RoundType,
+    VerdictType,
+)
+from colosseum.services.budget import BudgetManager
+from colosseum.services.context_bundle import ContextBundleService
+from colosseum.services.debate import DebateEngine
+from colosseum.services.judge import JudgeService
+from colosseum.services.normalizers import ResponseNormalizer
+from colosseum.services.provider_runtime import ProviderRuntimeService
+from colosseum.services.repository import FileRunRepository
+from colosseum.core.config import EVIDENCE_POLICY
+
+
+class ColosseumOrchestrator:
+    def __init__(
+        self,
+        repository: FileRunRepository,
+        context_service: ContextBundleService,
+        debate_engine: DebateEngine,
+        judge_service: JudgeService,
+        budget_manager: BudgetManager,
+        normalizer: ResponseNormalizer,
+        provider_runtime: ProviderRuntimeService,
+    ) -> None:
+        self.repository = repository
+        self.context_service = context_service
+        self.debate_engine = debate_engine
+        self.judge_service = judge_service
+        self.budget_manager = budget_manager
+        self.normalizer = normalizer
+        self.provider_runtime = provider_runtime
+
+    async def create_run(self, request: RunCreateRequest) -> ExperimentRun:
+        self.provider_runtime.validate_agents_selectable(request.agents)
+        run = ExperimentRun(
+            project_name=request.project_name,
+            task=request.task,
+            agents=request.agents,
+            judge=request.judge,
+            paid_provider_policy=request.paid_provider_policy,
+            budget_policy=request.budget_policy,
+        )
+        self.repository.save_run(run)
+        try:
+            run.status = RunStatus.PLANNING
+            run.context_bundle = self.context_service.freeze(request.context_sources)
+            self.repository.save_run(run)
+            await self._generate_plans(run)
+            run.plan_evaluations = self.judge_service.evaluate_plans(run.plans)
+
+            if run.judge.mode == JudgeMode.HUMAN:
+                run.status = RunStatus.AWAITING_HUMAN_JUDGE
+                run.human_judge_packet = self.judge_service.build_human_packet(run)
+                self._touch(run)
+                self.repository.save_run(run)
+                return run
+
+            run = await self._run_until_complete(run)
+            return run
+        except Exception as exc:
+            run.status = RunStatus.FAILED
+            run.error_message = str(exc)
+            run.stop_reason = "run_failed"
+            self._touch(run)
+            self.repository.save_run(run)
+            raise
+
+    async def continue_human_run(
+        self,
+        run_id: str,
+        action: HumanJudgeActionRequest,
+    ) -> ExperimentRun:
+        run = self.repository.load_run(run_id)
+        if run.status != RunStatus.AWAITING_HUMAN_JUDGE:
+            raise ValueError(f"Run {run_id} is not awaiting a human judge.")
+
+        if action.action == "request_round":
+            round_type = action.round_type or RoundType.CRITIQUE
+            if not self.budget_manager.can_start_round(
+                run.budget_policy,
+                run.budget_ledger,
+                len(run.debate_rounds) + 1,
+            ):
+                run.verdict = await self.judge_service.finalize(run)
+                run.status = RunStatus.COMPLETED
+                run.stop_reason = run.budget_ledger.stop_reason or "budget_stop"
+            else:
+                run.status = RunStatus.DEBATING
+                debate_round = await self.debate_engine.run_round(
+                    run,
+                    round_type=round_type,
+                    instructions=action.instructions,
+                )
+                run.debate_rounds.append(debate_round)
+                run.status = RunStatus.AWAITING_HUMAN_JUDGE
+                run.human_judge_packet = self.judge_service.build_human_packet(run)
+
+        elif action.action == "select_winner":
+            winning_ids = action.winning_plan_ids
+            if not winning_ids:
+                raise ValueError("select_winner requires at least one winning plan id.")
+            run.verdict = JudgeVerdict(
+                judge_mode=run.judge.mode,
+                verdict_type=VerdictType.WINNER,
+                winning_plan_ids=winning_ids[:1],
+                rationale=action.instructions or "Human judge selected the winning plan.",
+                selected_strengths=[],
+                rejected_risks=[],
+                stop_reason="human_selected_winner",
+                confidence=1.0,
+            )
+            run.status = RunStatus.COMPLETED
+            run.stop_reason = "human_selected_winner"
+
+        elif action.action == "merge_plans":
+            if len(action.winning_plan_ids) < 2:
+                raise ValueError("merge_plans requires at least two plan ids.")
+            chosen = [plan for plan in run.plans if plan.plan_id in action.winning_plan_ids]
+            if len(chosen) < 2:
+                raise ValueError("Could not find the requested plans to merge.")
+            merged = self.judge_service._build_merged_plan(chosen[0], chosen[1])
+            run.verdict = JudgeVerdict(
+                judge_mode=run.judge.mode,
+                verdict_type=VerdictType.MERGED,
+                winning_plan_ids=action.winning_plan_ids[:2],
+                synthesized_plan=merged,
+                rationale=action.instructions or "Human judge requested a merged final plan.",
+                selected_strengths=merged.strengths,
+                rejected_risks=[risk.title for risk in merged.risks],
+                stop_reason="human_merged_plans",
+                confidence=1.0,
+            )
+            run.status = RunStatus.COMPLETED
+            run.stop_reason = "human_merged_plans"
+
+        elif action.action == "request_revision":
+            if not self.budget_manager.can_start_round(
+                run.budget_policy,
+                run.budget_ledger,
+                len(run.debate_rounds) + 1,
+            ):
+                run.verdict = await self.judge_service.finalize(run)
+                run.status = RunStatus.COMPLETED
+                run.stop_reason = run.budget_ledger.stop_reason or "budget_stop"
+            else:
+                run.status = RunStatus.DEBATING
+                debate_round = await self.debate_engine.run_round(
+                    run,
+                    round_type=RoundType.TARGETED_REVISION,
+                    instructions=action.instructions,
+                )
+                run.debate_rounds.append(debate_round)
+                run.status = RunStatus.AWAITING_HUMAN_JUDGE
+                run.human_judge_packet = self.judge_service.build_human_packet(run)
+
+        self._touch(run)
+        self.repository.save_run(run)
+        return run
+
+    def load_run(self, run_id: str) -> ExperimentRun:
+        return self.repository.load_run(run_id)
+
+    def list_runs(self) -> list[RunListItem]:
+        return self.repository.list_runs()
+
+    async def _generate_plans(self, run: ExperimentRun) -> None:
+        if not run.context_bundle:
+            raise ValueError("Context bundle must be frozen before generating plans.")
+
+        context_text = self.context_service.render_for_prompt(run.context_bundle)
+        image_inputs = self.context_service.extract_image_inputs(run.context_bundle)
+        image_summary = self.context_service.summarize_image_inputs(run.context_bundle)
+        prompts = []
+        for agent in run.agents:
+            prompts.append(
+                self._build_plan_prompt(
+                    run,
+                    agent,
+                    context_text,
+                    image_summary=image_summary,
+                    has_image_inputs=bool(image_inputs),
+                )
+            )
+        results = await asyncio.gather(
+            *[
+                self.provider_runtime.execute(
+                    run=run,
+                    actor_id=agent.agent_id,
+                    actor_label=agent.display_name,
+                    provider_config=agent.provider,
+                    operation="plan",
+                    instructions=prompt,
+                    metadata={
+                        "run_id": run.run_id,
+                        "agent_id": agent.agent_id,
+                        "task_title": run.task.title,
+                        "context_summary": run.context_bundle.bundle_summary,
+                        "image_inputs": image_inputs,
+                        "image_summary": image_summary,
+                    },
+                )
+                for agent, prompt in zip(run.agents, prompts, strict=True)
+            ]
+        )
+
+        for agent, execution in zip(run.agents, results, strict=True):
+            result = execution.result
+            plan = self.normalizer.normalize_plan(
+                agent=agent,
+                payload=result.json_payload,
+                raw_content=result.content,
+                usage=result.usage,
+            )
+            run.plans.append(plan)
+            run.budget_ledger.record(agent.agent_id, result.usage, round_index=0)
+        self._touch(run)
+        self.repository.save_run(run)
+
+    async def _generate_plans_streaming(self, run: ExperimentRun):
+        """Yields (event_type, data) tuples as each agent's plan completes."""
+        if not run.context_bundle:
+            raise ValueError("Context bundle must be frozen before generating plans.")
+
+        context_bundle = run.context_bundle
+        context_text = self.context_service.render_for_prompt(context_bundle)
+        image_inputs = self.context_service.extract_image_inputs(context_bundle)
+        image_summary = self.context_service.summarize_image_inputs(context_bundle)
+
+        agent_tasks: dict[int, asyncio.Task] = {}
+        for agent in run.agents:
+            prompt = self._build_plan_prompt(
+                run,
+                agent,
+                context_text,
+                image_summary=image_summary,
+                has_image_inputs=bool(image_inputs),
+            )
+
+            async def agent_plan(a=agent, p=prompt):
+                execution = await self.provider_runtime.execute(
+                    run=run,
+                    actor_id=a.agent_id,
+                    actor_label=a.display_name,
+                    provider_config=a.provider,
+                    operation="plan",
+                    instructions=p,
+                    metadata={
+                        "run_id": run.run_id,
+                        "agent_id": a.agent_id,
+                        "task_title": run.task.title,
+                        "context_summary": context_bundle.bundle_summary,
+                        "image_inputs": image_inputs,
+                        "image_summary": image_summary,
+                        "persona": a.persona_content or "",
+                    },
+                )
+                return a, execution.result
+
+            task = asyncio.create_task(agent_plan())
+            agent_tasks[id(task)] = task
+            yield ("agent_planning", {"agent_id": agent.agent_id, "display_name": agent.display_name})
+
+        pending = list(agent_tasks.values())
+        try:
+            for coro in asyncio.as_completed(pending):
+                agent, result = await coro
+                plan = self.normalizer.normalize_plan(
+                    agent=agent,
+                    payload=result.json_payload,
+                    raw_content=result.content,
+                    usage=result.usage,
+                )
+                run.plans.append(plan)
+                run.budget_ledger.record(agent.agent_id, result.usage, round_index=0)
+                yield ("plan_ready", {
+                    "agent_id": agent.agent_id,
+                    "display_name": plan.display_name,
+                    "plan_id": plan.plan_id,
+                    "summary": plan.summary,
+                    "strengths": plan.strengths,
+                    "weaknesses": plan.weaknesses,
+                })
+        except Exception:
+            # Cancel remaining tasks to avoid "Task exception was never retrieved"
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            # Suppress exceptions from cancelled tasks
+            for task in pending:
+                if task.done() and not task.cancelled():
+                    try:
+                        task.result()
+                    except Exception:
+                        pass
+            raise
+
+        self._touch(run)
+        self.repository.save_run(run)
+
+    async def _run_until_complete(self, run: ExperimentRun) -> ExperimentRun:
+        while True:
+            decision = await self.judge_service.decide(run)
+            run.judge_trace.append(decision)
+
+            if decision.action == JudgeActionType.FINALIZE:
+                run.verdict = await self.judge_service.finalize(run, decision)
+                run.status = RunStatus.COMPLETED
+                run.stop_reason = decision.reasoning
+                self._touch(run)
+                self.repository.save_run(run)
+                return run
+
+            if not self.budget_manager.can_start_round(
+                run.budget_policy,
+                run.budget_ledger,
+                len(run.debate_rounds) + 1,
+            ):
+                fallback_decision = await self.judge_service.decide(run)
+                run.judge_trace.append(fallback_decision)
+                run.verdict = await self.judge_service.finalize(run, fallback_decision)
+                run.status = RunStatus.COMPLETED
+                run.stop_reason = run.budget_ledger.stop_reason or fallback_decision.reasoning
+                self._touch(run)
+                self.repository.save_run(run)
+                return run
+
+            round_type = decision.next_round_type or RoundType.CRITIQUE
+            run.status = RunStatus.DEBATING
+            debate_round = await self.debate_engine.run_round(
+                run,
+                round_type=round_type,
+                instructions="Focus on the highest-value disagreement only.",
+            )
+            run.debate_rounds.append(debate_round)
+            self._touch(run)
+            self.repository.save_run(run)
+
+    def _build_plan_prompt(
+        self,
+        run: ExperimentRun,
+        agent,
+        context_text: str,
+        image_summary: str,
+        has_image_inputs: bool,
+    ) -> str:
+        parts = [
+            f"Task title: {run.task.title}",
+            f"Problem statement: {run.task.problem_statement}",
+            f"Success criteria: {run.task.success_criteria}",
+            f"Constraints: {run.task.constraints}",
+            f"Agent specialty: {agent.specialty or 'generalist'}",
+            "Produce an independent plan before seeing any other plan.",
+            EVIDENCE_POLICY,
+            "Use this exact section structure: summary, evidence_basis, assumptions, architecture, implementation_strategy, risks, strengths, weaknesses, trade_offs, open_questions.",
+            "Every major claim should be tied to objective evidence from the frozen bundle or labeled as inference/uncertainty.",
+        ]
+        if has_image_inputs:
+            parts.extend(
+                [
+                    f"Shared visual context: {image_summary}",
+                    "Use the attached multimodal image package when available. "
+                    "If your provider cannot inspect images, explicitly note that limitation instead of guessing visual details.",
+                ]
+            )
+        parts.append(context_text)
+        if agent.persona_content:
+            parts.insert(0, "=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ===")
+        elif agent.system_prompt:
+            parts.insert(0, "System: " + agent.system_prompt)
+        return "\n\n".join(parts)
+
+    def _touch(self, run: ExperimentRun) -> None:
+        run.updated_at = datetime.now(timezone.utc)

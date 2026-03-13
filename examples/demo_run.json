@@ -1,0 +1,67 @@
+{
+  "project_name": "Colosseum",
+  "task": {
+    "title": "Initial use case: codebase-aware provider abstraction redesign",
+    "problem_statement": "Design the best implementation plan for adding a vendor-neutral LLM provider layer to an existing AI application without breaking current integrations.",
+    "task_type": "codebase_implementation",
+    "success_criteria": [
+      "Preserve backward compatibility during migration",
+      "Keep per-request observability and cost accounting",
+      "Support new providers without changing orchestration code"
+    ],
+    "constraints": [
+      "Prefer incremental rollout over large rewrites",
+      "Assume a Python backend and existing prompt workflows"
+    ]
+  },
+  "context_sources": [
+    {
+      "source_id": "brief",
+      "kind": "inline_text",
+      "label": "Product brief",
+      "content": "The existing app uses a single LLM vendor directly in service code. The redesign should isolate provider concerns, preserve auditability, and support both API-backed and CLI-backed agents."
+    }
+  ],
+  "agents": [
+    {
+      "agent_id": "codex",
+      "display_name": "Codex",
+      "specialty": "implementation rigor",
+      "provider": {
+        "type": "mock",
+        "model": "mock-rigorous"
+      }
+    },
+    {
+      "agent_id": "claude",
+      "display_name": "Claude Code",
+      "specialty": "architecture trade-offs",
+      "provider": {
+        "type": "mock",
+        "model": "mock-architect"
+      }
+    },
+    {
+      "agent_id": "gemini",
+      "display_name": "Gemini",
+      "specialty": "cost and scalability",
+      "provider": {
+        "type": "mock",
+        "model": "mock-scalable"
+      }
+    }
+  ],
+  "judge": {
+    "mode": "automated",
+    "minimum_confidence_to_stop": 0.78,
+    "prefer_merged_plan_on_close_scores": true
+  },
+  "budget_policy": {
+    "max_rounds": 3,
+    "total_token_budget": 50000,
+    "per_round_token_limit": 9000,
+    "per_agent_message_limit": 1,
+    "min_novelty_threshold": 0.2,
+    "convergence_threshold": 0.75
+  }
+}

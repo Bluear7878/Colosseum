@@ -1,0 +1,2076 @@
+/* ══════════════════════════════════════════════
+   COLOSSEUM — Arena UI (ES5-compatible)
+   ══════════════════════════════════════════════ */
+
+/* ── Gladiator definitions ── */
+var GLADIATORS = [
+  // ─── Paid models (API / CLI subscription) ───
+  {
+    id: "claude", name: "Claude", icon: "\u2694\uFE0F", tier: "paid",
+    desc: "claude -p --model <model>",
+    variants: [
+      { model: "claude-opus-4-6", label: "Opus 4.6", type: "claude_cli" },
+      { model: "claude-sonnet-4-6", label: "Sonnet 4.6", type: "claude_cli" },
+      { model: "claude-haiku-4-5-20251001", label: "Haiku 4.5", type: "claude_cli" }
+    ]
+  },
+  {
+    id: "openai", name: "OpenAI", icon: "\uD83D\uDEE1\uFE0F", tier: "paid",
+    desc: "codex --model <model> -p",
+    variants: [
+      { model: "gpt-5.4", label: "GPT-5.4", type: "codex_cli" },
+      { model: "gpt-5.3-codex", label: "GPT-5.3 Codex", type: "codex_cli" },
+      { model: "o3", label: "o3 (legacy)", type: "codex_cli" },
+      { model: "o4-mini", label: "o4-mini (legacy)", type: "codex_cli" }
+    ]
+  },
+  {
+    id: "gemini", name: "Gemini", icon: "\uD83D\uDD31", tier: "paid",
+    desc: "gemini --model <model> -p",
+    variants: [
+      { model: "gemini-2.5-pro", label: "2.5 Pro", type: "gemini_cli" },
+      { model: "gemini-2.5-flash", label: "2.5 Flash", type: "gemini_cli" }
+    ]
+  },
+  // ─── Free / Local models (Ollama) ───
+  {
+    id: "llama", name: "Llama", icon: "\uD83E\uDD99", tier: "free",
+    desc: "ollama run <model>",
+    variants: [
+      { model: "ollama:llama3.3", label: "Llama 3.3 70B", type: "huggingface_local" },
+      { model: "ollama:llama3.2", label: "Llama 3.2 3B", type: "huggingface_local" },
+      { model: "ollama:llama3.1", label: "Llama 3.1 8B", type: "huggingface_local" },
+      { model: "ollama:llama3.1:70b", label: "Llama 3.1 70B", type: "huggingface_local" }
+    ]
+  },
+  {
+    id: "mistral", name: "Mistral", icon: "\uD83C\uDF2A\uFE0F", tier: "free",
+    desc: "ollama run <model>",
+    variants: [
+      { model: "ollama:mistral", label: "Mistral 7B", type: "huggingface_local" },
+      { model: "ollama:mixtral", label: "Mixtral 8x7B", type: "huggingface_local" },
+      { model: "ollama:mistral-nemo", label: "Nemo 12B", type: "huggingface_local" },
+      { model: "ollama:mistral-small", label: "Small 22B", type: "huggingface_local" }
+    ]
+  },
+  {
+    id: "qwen", name: "Qwen", icon: "\uD83C\uDFEF", tier: "free",
+    desc: "ollama run <model>",
+    variants: [
+      { model: "ollama:qwen2.5", label: "Qwen 2.5 7B", type: "huggingface_local" },
+      { model: "ollama:qwen2.5:14b", label: "Qwen 2.5 14B", type: "huggingface_local" },
+      { model: "ollama:qwen2.5:32b", label: "Qwen 2.5 32B", type: "huggingface_local" },
+      { model: "ollama:qwen2.5-coder", label: "Coder 7B", type: "huggingface_local" }
+    ]
+  },
+  {
+    id: "gemma", name: "Gemma", icon: "\uD83D\uDC8E", tier: "free",
+    desc: "ollama run <model>",
+    variants: [
+      { model: "ollama:gemma3", label: "Gemma 3 4B", type: "huggingface_local" },
+      { model: "ollama:gemma3:12b", label: "Gemma 3 12B", type: "huggingface_local" },
+      { model: "ollama:gemma3:27b", label: "Gemma 3 27B", type: "huggingface_local" }
+    ]
+  },
+  {
+    id: "phi", name: "Phi", icon: "\uD83E\uDDE0", tier: "free",
+    desc: "ollama run <model>",
+    variants: [
+      { model: "ollama:phi4", label: "Phi-4 14B", type: "huggingface_local" },
+      { model: "ollama:phi4-mini", label: "Phi-4 Mini", type: "huggingface_local" }
+    ]
+  },
+  {
+    id: "deepseek", name: "DeepSeek", icon: "\uD83D\uDD2D", tier: "free",
+    desc: "ollama run <model>",
+    variants: [
+      { model: "ollama:deepseek-r1", label: "R1 7B", type: "huggingface_local" },
+      { model: "ollama:deepseek-r1:14b", label: "R1 14B", type: "huggingface_local" },
+      { model: "ollama:deepseek-r1:32b", label: "R1 32B", type: "huggingface_local" },
+      { model: "ollama:deepseek-v3", label: "V3", type: "huggingface_local" }
+    ]
+  },
+];
+
+/* ── State ── */
+var selectedGladiators = {}; // id -> true
+var gladiatorVariants = {};  // id -> variant index
+var attachedFiles = [];
+var MAX_TEXT_FILE_BYTES = 100000;
+var MAX_IMAGE_FILE_BYTES = 4 * 1024 * 1024;
+var currentRunId = null;
+var currentMode = "live"; // "live" or "result"
+var currentJudgeMode = "automated"; // "automated" or "human"
+
+function loadCustomModels() {
+  try {
+    return JSON.parse(localStorage.getItem("colosseum:custom_models") || "[]").map(normalizeCustomModel);
+  }
+  catch (e) { return []; }
+}
+function saveCustomModels(list) {
+  localStorage.setItem("colosseum:custom_models", JSON.stringify(list.map(normalizeCustomModel)));
+}
+var customModels = loadCustomModels();
+
+var gladiatorPersonas = {};  // id -> {persona_id, persona_content}
+var availablePersonas = [];  // fetched from /personas
+var personaBuilderTarget = null;
+var paidQuotaStates = {};     // quota_key -> state
+var BASE_PAID_QUOTA_DEFAULTS = [
+  { quota_key: "paid:claude", gladiator_id: "claude", label: "Claude", cycle_token_limit: 0, remaining_tokens: 0, reset_at: null },
+  { quota_key: "paid:openai", gladiator_id: "openai", label: "OpenAI", cycle_token_limit: 0, remaining_tokens: 0, reset_at: null },
+  { quota_key: "paid:gemini", gladiator_id: "gemini", label: "Gemini", cycle_token_limit: 0, remaining_tokens: 0, reset_at: null }
+];
+var DEFAULT_FALLBACK_MODEL = "ollama:llama3.2";
+
+function normalizeCustomModel(raw) {
+  raw = raw || {};
+  var safeName = raw.name || "Custom Model";
+  var safeId = raw.id || ("custom-" + safeName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
+  var tier = raw.tier === "paid" ? "paid" : "free";
+  var type = raw.type || "command";
+  var modelId = raw.model || raw.model_id || safeName;
+  return {
+    id: safeId || "custom-model",
+    name: safeName,
+    desc: raw.desc || raw.description || (type === "command" ? (raw.command && raw.command[0]) || "custom command" : modelId),
+    type: type,
+    tier: tier,
+    model: modelId,
+    command: Array.isArray(raw.command) ? raw.command : (typeof raw.command === "string" ? raw.command.split(" ").filter(Boolean) : []),
+    quota_key: raw.quota_key || (tier === "paid" ? "paid:custom:" + (safeId || "custom-model") : null)
+  };
+}
+
+// ── Dynamic model discovery ──
+// Provider grouping config: maps API type to GLADIATORS entry info
+var PROVIDER_GROUP_MAP = {
+  "claude_cli": { group: "claude", name: "Claude", icon: "\u2694\uFE0F", tier: "paid", desc: "claude -p --model <model>" },
+  "codex_cli":  { group: "openai", name: "OpenAI", icon: "\uD83D\uDEE1\uFE0F", tier: "paid", desc: "codex --model <model> -p" },
+  "gemini_cli": { group: "gemini", name: "Gemini", icon: "\uD83D\uDD31", tier: "paid", desc: "gemini --model <model> -p" },
+  "ollama":     { group: "ollama", name: "Ollama", icon: "\uD83E\uDD99", tier: "free", desc: "ollama run <model>" },
+};
+
+function fetchModels() {
+  return api("/models").then(function(apiModels) {
+    if (!apiModels || !apiModels.length) return;
+
+    // Group API models by provider type
+    var groups = {};
+    apiModels.forEach(function(m) {
+      var gInfo = PROVIDER_GROUP_MAP[m.type];
+      if (!gInfo) return;
+      var gid = gInfo.group;
+      if (!groups[gid]) {
+        groups[gid] = { id: gid, name: gInfo.name, icon: gInfo.icon, tier: gInfo.tier, desc: gInfo.desc, variants: [] };
+      }
+      var modelId = m.id.indexOf(":") !== -1 ? m.id.split(":").slice(1).join(":") : m.id;
+      // For ollama, keep the "ollama:" prefix in model field
+      var variantModel = m.type === "ollama" ? m.id : modelId;
+      var variantType = m.type === "ollama" ? "huggingface_local" : m.type;
+      // Avoid duplicate variants
+      var exists = groups[gid].variants.some(function(v) { return v.model === variantModel; });
+      if (!exists) {
+        groups[gid].variants.push({ model: variantModel, label: m.name, type: variantType });
+      }
+    });
+
+    // Merge into GLADIATORS: update existing entries, add new ones
+    Object.keys(groups).forEach(function(gid) {
+      var existing = null;
+      var existingIdx = -1;
+      GLADIATORS.forEach(function(g, i) {
+        if (g.id === gid) { existing = g; existingIdx = i; }
+      });
+
+      if (existing) {
+        // Merge variants: add new ones from API that aren't already present
+        var apiGroup = groups[gid];
+        apiGroup.variants.forEach(function(av) {
+          var found = existing.variants.some(function(v) { return v.model === av.model; });
+          if (!found) {
+            existing.variants.push(av);
+          }
+        });
+      } else {
+        // Add new group (e.g. if ollama models are discovered but group didn't exist)
+        GLADIATORS.push(groups[gid]);
+      }
+    });
+
+    // Re-render if the gladiator grid is visible
+    if (document.getElementById("gladiator-grid")) {
+      renderGladiatorGrid();
+    }
+  }).catch(function(err) {
+    // API not available — keep hardcoded GLADIATORS
+  });
+}
+
+// Fetch live models on load
+fetchModels();
+
+// Fetch personas on load
+function fetchPersonas() {
+  return api("/personas").then(function(list) {
+    availablePersonas = list || [];
+    return availablePersonas;
+  }).catch(function() {
+    availablePersonas = [];
+    return availablePersonas;
+  });
+}
+fetchPersonas();
+
+/* ── Helpers ── */
+function esc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function fmt(v) { return typeof v === "number" ? v.toFixed(2) : "-"; }
+function show(id) { document.getElementById(id).classList.remove("hidden"); }
+function hide(id) { document.getElementById(id).classList.add("hidden"); }
+
+function toast(msg) {
+  var el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function() { el.classList.add("hidden"); }, 3500);
+}
+
+function resetPersonaSelectValue(gid) {
+  if (!gid) return;
+  var sel = document.querySelector('.persona-select[data-gid="' + gid + '"]');
+  if (!sel) return;
+  var persona = gladiatorPersonas[gid];
+  if (persona && persona.persona_id && persona.persona_id !== "__custom__") sel.value = persona.persona_id;
+  else sel.value = "";
+}
+
+function col(title, items) {
+  if (!items || !items.length) return "";
+  return '<div class="round-col"><h4>' + esc(title) + '</h4>' + ul(items) + '</div>';
+}
+
+function ul(items) {
+  if (!items || !items.length) return "";
+  return '<ul>' + items.map(function(i) { return '<li>' + esc(i) + '</li>'; }).join("") + '</ul>';
+}
+
+function api(path, opts) {
+  opts = opts || {};
+  return fetch(path, {
+    headers: Object.assign({ "Content-Type": "application/json" }, opts.headers || {}),
+    method: opts.method || "GET",
+    body: opts.body || undefined
+  }).then(function(r) {
+    if (!r.ok) {
+      return r.json().catch(function() { return {}; }).then(function(b) {
+        throw new Error(b.detail || "Request failed: " + r.status);
+      });
+    }
+    return r.json();
+  });
+}
+
+function timeStr() {
+  var d = new Date();
+  var h = d.getHours();
+  var m = d.getMinutes();
+  var s = d.getSeconds();
+  return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+}
+
+function setBattleNote(message, busy) {
+  var note = document.getElementById("battle-note");
+  if (!note) return;
+  note.textContent = message;
+  if (busy) note.classList.add("busy");
+  else note.classList.remove("busy");
+}
+
+function quotaKeyForGladiator(gladiatorId) {
+  if (gladiatorId === "claude") return "paid:claude";
+  if (gladiatorId === "openai") return "paid:openai";
+  if (gladiatorId === "gemini") return "paid:gemini";
+  return null;
+}
+
+function quotaKeyForEntry(entry) {
+  if (!entry) return null;
+  if (entry.quota_key) return entry.quota_key;
+  return quotaKeyForGladiator(entry.id);
+}
+
+function quotaStateForEntry(entry) {
+  var quotaKey = quotaKeyForEntry(entry);
+  return quotaKey ? paidQuotaStates[quotaKey] || null : null;
+}
+
+function isTrackedQuotaState(state) {
+  return !!state && ((state.cycle_token_limit || 0) > 0 || (state.remaining_tokens || 0) > 0 || !!state.reset_at);
+}
+
+function isGladiatorQuotaBlocked(gladiator) {
+  if (!gladiator || gladiator.tier !== "paid") return false;
+  var state = quotaStateForEntry(gladiator);
+  return isTrackedQuotaState(state) && (state.remaining_tokens || 0) <= 0;
+}
+
+function quotaStatusText(gladiator) {
+  if (!gladiator || gladiator.tier !== "paid") return "";
+  var state = quotaStateForEntry(gladiator);
+  if (!isTrackedQuotaState(state)) return "Quota not tracked";
+  if ((state.remaining_tokens || 0) > 0) {
+    return (state.remaining_tokens || 0).toLocaleString() + " tracked tokens left";
+  }
+  if (state.reset_at) {
+    return "Exhausted until " + new Date(state.reset_at).toLocaleString();
+  }
+  return "Tracked quota exhausted";
+}
+
+function mergeQuotaStates(list) {
+  var merged = {};
+  getQuotaDefaults().forEach(function(item) {
+    merged[item.quota_key] = JSON.parse(JSON.stringify(item));
+  });
+  (list || []).forEach(function(item) {
+    if (!item || !item.quota_key) return;
+    merged[item.quota_key] = item;
+  });
+  paidQuotaStates = merged;
+}
+
+function fetchQuotaStates() {
+  return api("/provider-quotas").then(function(list) {
+    mergeQuotaStates(list);
+    renderQuotaPanel();
+    renderGladiatorGrid();
+    return paidQuotaStates;
+  }).catch(function() {
+    mergeQuotaStates([]);
+    renderQuotaPanel();
+    renderGladiatorGrid();
+    return paidQuotaStates;
+  });
+}
+
+function freeFallbackVariants() {
+  var variants = [];
+  GLADIATORS.forEach(function(g) {
+    if (g.tier !== "free") return;
+    (g.variants || []).forEach(function(v) {
+      variants.push({
+        group: g.name,
+        label: g.name + " — " + v.label,
+        variant: v
+      });
+    });
+  });
+  customModels.forEach(function(m) {
+    if (m.tier !== "free") return;
+    variants.push({
+      group: "Custom",
+      label: m.name + " — custom",
+      variant: m,
+      custom: true
+    });
+  });
+  return variants;
+}
+
+function getQuotaDefaults() {
+  var defaults = BASE_PAID_QUOTA_DEFAULTS.slice();
+  customModels.forEach(function(model) {
+    if (model.tier !== "paid") return;
+    defaults.push({
+      quota_key: model.quota_key || ("paid:custom:" + model.id),
+      gladiator_id: model.id,
+      label: model.name,
+      cycle_token_limit: 0,
+      remaining_tokens: 0,
+      reset_at: null
+    });
+  });
+  return defaults;
+}
+
+function renderQuotaPanel() {
+  var list = document.getElementById("quota-list");
+  if (!list) return;
+  list.innerHTML = getQuotaDefaults().map(function(def) {
+    var state = paidQuotaStates[def.quota_key] || def;
+    var resetValue = state.reset_at ? new Date(state.reset_at).toISOString().slice(0, 16) : "";
+    var tracked = isTrackedQuotaState(state);
+    var statusClass = tracked && (state.remaining_tokens || 0) <= 0 ? "exhausted" : tracked ? "tracked" : "idle";
+    var statusText = tracked ? quotaStatusText({ id: def.gladiator_id, tier: "paid", quota_key: def.quota_key }) : "Tracking off";
+    return '<div class="quota-row">' +
+      '<div class="quota-meta">' +
+        '<div class="quota-label">' + esc(def.label) + '</div>' +
+        '<div class="quota-status ' + esc(statusClass) + '">' + esc(statusText) + '</div>' +
+      '</div>' +
+      '<input class="arena-input-sm quota-input" data-field="cycle" data-key="' + esc(def.quota_key) + '" type="number" min="0" placeholder="Cycle tokens" value="' + esc(String(state.cycle_token_limit || "")) + '"/>' +
+      '<input class="arena-input-sm quota-input" data-field="remaining" data-key="' + esc(def.quota_key) + '" type="number" min="0" placeholder="Remaining" value="' + esc(String(state.remaining_tokens || "")) + '"/>' +
+      '<input class="arena-input-sm quota-input quota-date" data-field="reset_at" data-key="' + esc(def.quota_key) + '" type="datetime-local" value="' + esc(resetValue) + '"/>' +
+      '</div>';
+  }).join("");
+
+  var fallbackSelect = document.getElementById("free-fallback-model");
+  if (fallbackSelect && !fallbackSelect.dataset.ready) {
+    fallbackSelect.innerHTML = freeFallbackVariants().map(function(item) {
+      var selected = item.variant.model === DEFAULT_FALLBACK_MODEL ? ' selected' : '';
+      return '<option value="' + esc(item.variant.model) + '"' + selected + '>' + esc(item.label) + '</option>';
+    }).join("");
+    fallbackSelect.dataset.ready = "true";
+  }
+  updateQuotaPolicyNote();
+}
+
+function collectQuotaStatesFromUI() {
+  return getQuotaDefaults().map(function(def) {
+    var cycleEl = document.querySelector('.quota-input[data-field="cycle"][data-key="' + def.quota_key + '"]');
+    var remainingEl = document.querySelector('.quota-input[data-field="remaining"][data-key="' + def.quota_key + '"]');
+    var resetEl = document.querySelector('.quota-input[data-field="reset_at"][data-key="' + def.quota_key + '"]');
+    return {
+      quota_key: def.quota_key,
+      label: def.label,
+      billing_tier: "paid",
+      cycle_token_limit: cycleEl && cycleEl.value ? parseInt(cycleEl.value, 10) : 0,
+      remaining_tokens: remainingEl && remainingEl.value ? parseInt(remainingEl.value, 10) : 0,
+      reset_at: resetEl && resetEl.value ? new Date(resetEl.value).toISOString() : null
+    };
+  });
+}
+
+function saveQuotaSettings() {
+  var states = collectQuotaStatesFromUI();
+  return api("/provider-quotas", {
+    method: "PUT",
+    body: JSON.stringify({ states: states })
+  }).then(function(list) {
+    mergeQuotaStates(list);
+    renderQuotaPanel();
+    renderGladiatorGrid();
+    toast("Paid quota settings saved.");
+  });
+}
+
+function updateQuotaPolicyNote() {
+  var select = document.getElementById("paid-depletion-action");
+  var fallbackSelect = document.getElementById("free-fallback-model");
+  var note = document.getElementById("quota-policy-note");
+  if (!select || !note) return;
+  if (select.value === "switch_to_free") {
+    note.textContent = "If a paid provider runs dry mid-battle, Colosseum will swap only the next turns to " +
+      ((fallbackSelect && fallbackSelect.options[fallbackSelect.selectedIndex]) ? fallbackSelect.options[fallbackSelect.selectedIndex].text : "the chosen free model") + ".";
+    if (fallbackSelect) fallbackSelect.disabled = false;
+  } else if (select.value === "wait_for_reset") {
+    note.textContent = "If a paid provider runs dry mid-battle, Colosseum will pause until the tracked reset time. Long waits keep the run open.";
+    if (fallbackSelect) fallbackSelect.disabled = true;
+  } else {
+    note.textContent = "If a paid provider runs dry mid-battle, the run stops immediately with a clear error.";
+    if (fallbackSelect) fallbackSelect.disabled = true;
+  }
+}
+
+function isImageUpload(file) {
+  var type = (file && file.type) || "";
+  var name = (file && file.name) || "";
+  return /^image\//.test(type) || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name);
+}
+
+function guessImageMediaType(name) {
+  var lower = String(name || "").toLowerCase();
+  if (/\.png$/.test(lower)) return "image/png";
+  if (/\.(jpg|jpeg)$/.test(lower)) return "image/jpeg";
+  if (/\.gif$/.test(lower)) return "image/gif";
+  if (/\.webp$/.test(lower)) return "image/webp";
+  if (/\.bmp$/.test(lower)) return "image/bmp";
+  if (/\.svg$/.test(lower)) return "image/svg+xml";
+  return "image/png";
+}
+
+/* ── Render gladiator grid ── */
+function renderGladiatorGrid() {
+  var grid = document.getElementById("gladiator-grid");
+  grid.innerHTML = "";
+
+  var paidGladiators = GLADIATORS.filter(function(g) { return g.tier === "paid"; });
+  var freeGladiators = GLADIATORS.filter(function(g) { return g.tier === "free"; });
+  var paidCustomModels = customModels.filter(function(m) { return m.tier === "paid"; });
+  var freeCustomModels = customModels.filter(function(m) { return m.tier !== "paid"; });
+
+  // Paid section
+  var paidHeader = document.createElement("div");
+  paidHeader.className = "tier-header tier-paid";
+  paidHeader.innerHTML = '<span class="tier-icon">\uD83D\uDC51</span> Premium Gladiators <span class="tier-badge paid">API</span>';
+  grid.appendChild(paidHeader);
+
+  var paidGrid = document.createElement("div");
+  paidGrid.className = "tier-grid";
+  paidGladiators.forEach(function(g) {
+    paidGrid.appendChild(createGladiatorCard(g));
+  });
+  paidCustomModels.forEach(function(m) {
+    paidGrid.appendChild(createCustomCard(m));
+  });
+  grid.appendChild(paidGrid);
+
+  // Free section
+  var freeHeader = document.createElement("div");
+  freeHeader.className = "tier-header tier-free";
+  freeHeader.innerHTML = '<span class="tier-icon">\uD83C\uDFDB\uFE0F</span> Open-Source Models <span class="tier-badge free">LOCAL</span>';
+  grid.appendChild(freeHeader);
+
+  var freeGrid = document.createElement("div");
+  freeGrid.className = "tier-grid";
+  freeGladiators.forEach(function(g) {
+    freeGrid.appendChild(createGladiatorCard(g));
+  });
+  // Custom CLI models
+  freeCustomModels.forEach(function(m) {
+    freeGrid.appendChild(createCustomCard(m));
+  });
+  grid.appendChild(freeGrid);
+}
+
+function createGladiatorCard(g) {
+  var blocked = isGladiatorQuotaBlocked(g);
+  if (blocked && selectedGladiators[g.id]) delete selectedGladiators[g.id];
+  var card = document.createElement("div");
+  card.className = "gladiator-card" + (selectedGladiators[g.id] ? " selected" : "") + (blocked ? " disabled-card" : "");
+  card.dataset.gid = g.id;
+
+  var html = '<div class="gladiator-icon">' + g.icon + '</div>';
+  html += '<div class="gladiator-name">' + esc(g.name) + '</div>';
+  if (g.desc) {
+    html += '<div class="gladiator-desc">' + esc(g.desc) + '</div>';
+  }
+  if (g.tier === "paid") {
+    html += '<div class="quota-chip' + (blocked ? ' exhausted' : '') + '">' + esc(quotaStatusText(g)) + '</div>';
+  }
+
+  // Variant select
+  html += '<select class="gladiator-select" data-gid="' + esc(g.id) + '"' + (blocked ? ' disabled' : '') + '>';
+  var currentIdx = gladiatorVariants[g.id] || 0;
+  g.variants.forEach(function(v, i) {
+    html += '<option value="' + i + '"' + (i === currentIdx ? ' selected' : '') + '>' + esc(v.label) + '</option>';
+  });
+  html += '</select>';
+
+  // Persona select
+  html += '<select class="persona-select" data-gid="' + esc(g.id) + '" title="Assign a debating persona"' + (blocked ? ' disabled' : '') + '>';
+  html += '<option value="">-- Persona --</option>';
+  var hasBuiltin = false;
+  var hasCustom = false;
+  availablePersonas.forEach(function(p) {
+    if (p.source === "custom" && !hasCustom) {
+      hasCustom = true;
+      if (hasBuiltin) html += '<option disabled>───────</option>';
+      html += '<option disabled>Custom Personas</option>';
+    } else if (p.source !== "custom" && !hasBuiltin) {
+      hasBuiltin = true;
+    }
+    var selAttr = (gladiatorPersonas[g.id] && gladiatorPersonas[g.id].persona_id === p.persona_id) ? ' selected' : '';
+    var label = p.name;
+    if (p.description) label += ' - ' + p.description.slice(0, 40);
+    html += '<option value="' + esc(p.persona_id) + '"' + selAttr + ' title="' + esc(p.description || '') + '">' + esc(label) + '</option>';
+  });
+  html += '<option disabled>───────</option>';
+  html += '<option value="__generate__">+ Build From Profile...</option>';
+  html += '<option value="__custom__">+ Write Custom...</option>';
+  html += '</select>';
+
+  card.innerHTML = html;
+
+  // Click card to toggle selection (not when clicking select)
+  card.addEventListener("click", function(e) {
+    if (e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
+    if (blocked) {
+      toast(quotaStatusText(g));
+      return;
+    }
+    if (selectedGladiators[g.id]) {
+      delete selectedGladiators[g.id];
+    } else {
+      selectedGladiators[g.id] = true;
+    }
+    card.classList.toggle("selected", !!selectedGladiators[g.id]);
+  });
+
+  // Variant change
+  var varSel = card.querySelector(".gladiator-select");
+  varSel.addEventListener("change", function() {
+    gladiatorVariants[g.id] = parseInt(varSel.value);
+  });
+
+  // Persona change
+  var perSel = card.querySelector(".persona-select");
+  perSel.addEventListener("change", function() {
+    var val = perSel.value;
+    if (val === "__generate__") {
+      openPersonaBuilderModal(g.id);
+    } else if (val === "__custom__") {
+      openPersonaModal(g.id);
+    } else if (val) {
+      // Fetch persona content
+      api("/personas/" + val).then(function(data) {
+        gladiatorPersonas[g.id] = { persona_id: val, persona_content: data.content };
+      }).catch(function() {
+        toast("Failed to load persona.");
+        perSel.value = "";
+        delete gladiatorPersonas[g.id];
+      });
+    } else {
+      delete gladiatorPersonas[g.id];
+    }
+  });
+
+  return card;
+}
+
+function createCustomCard(m) {
+  var blocked = isGladiatorQuotaBlocked(m);
+  if (blocked && selectedGladiators[m.id]) delete selectedGladiators[m.id];
+  var card = document.createElement("div");
+  card.className = "gladiator-card" + (selectedGladiators[m.id] ? " selected" : "") + (blocked ? " disabled-card" : "");
+  card.dataset.gid = m.id;
+
+  var html = '<div class="gladiator-icon">\u2699\uFE0F</div>';
+  html += '<div class="gladiator-name">' + esc(m.name) + '</div>';
+  html += '<div style="font-size:0.72rem;color:var(--sand-muted)">' + esc(m.desc) + '</div>';
+  html += '<div class="quota-chip' + (m.tier === "paid" && blocked ? ' exhausted' : '') + '">' + esc(m.tier === "paid" ? quotaStatusText(m) : "Free custom model") + '</div>';
+  html += '<select class="persona-select" data-gid="' + esc(m.id) + '"' + (blocked ? ' disabled' : '') + '>';
+  html += '<option value="">-- Persona --</option>';
+  availablePersonas.forEach(function(p) {
+    var selAttr = (gladiatorPersonas[m.id] && gladiatorPersonas[m.id].persona_id === p.persona_id) ? ' selected' : '';
+    html += '<option value="' + esc(p.persona_id) + '"' + selAttr + '>' + esc(p.name) + '</option>';
+  });
+  html += '<option disabled>───────</option>';
+  html += '<option value="__generate__">+ Build From Profile...</option>';
+  html += '<option value="__custom__">+ Write Custom...</option>';
+  html += '</select>';
+
+  card.innerHTML = html;
+  card.addEventListener("click", function(e) {
+    if (e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
+    if (blocked) {
+      toast(quotaStatusText(m));
+      return;
+    }
+    if (selectedGladiators[m.id]) {
+      delete selectedGladiators[m.id];
+    } else {
+      selectedGladiators[m.id] = true;
+    }
+    card.classList.toggle("selected", !!selectedGladiators[m.id]);
+  });
+
+  var perSel = card.querySelector(".persona-select");
+  perSel.addEventListener("change", function() {
+    var val = perSel.value;
+    if (val === "__generate__") {
+      openPersonaBuilderModal(m.id);
+    } else if (val === "__custom__") {
+      openPersonaModal(m.id);
+    } else if (val) {
+      api("/personas/" + val).then(function(data) {
+        gladiatorPersonas[m.id] = { persona_id: val, persona_content: data.content };
+      }).catch(function() {
+        toast("Failed to load persona.");
+        perSel.value = "";
+        delete gladiatorPersonas[m.id];
+      });
+    } else {
+      delete gladiatorPersonas[m.id];
+    }
+  });
+
+  return card;
+}
+
+// ── Dynamic model discovery from /models API ──
+var _modelPollTimer = null;
+
+function refreshGladiatorsFromAPI() {
+  api("/models").then(function(models) {
+    if (!models || !models.length) return;
+
+    // Group by provider
+    var byProvider = {};
+    models.forEach(function(m) {
+      var provider = m.provider || m.id.split(":")[0];
+      if (!byProvider[provider]) byProvider[provider] = [];
+      byProvider[provider].push(m);
+    });
+
+    // Rebuild paid gladiators from API response
+    var providerMeta = {
+      claude:  { name: "Claude",   icon: "\u2694\uFE0F",          desc: "claude -p --model <model>", tier: "paid" },
+      codex:   { name: "OpenAI",   icon: "\uD83D\uDEE1\uFE0F",   desc: "codex --model <model> -p",  tier: "paid" },
+      gemini:  { name: "Gemini",   icon: "\uD83D\uDD31",          desc: "gemini --model <model> -p", tier: "paid" },
+      ollama:  { name: "Ollama",   icon: "\uD83E\uDD99",          desc: "ollama run <model>",        tier: "free" }
+    };
+
+    var newGladiators = [];
+    var paidProviders = ["claude", "codex", "gemini"];
+
+    paidProviders.forEach(function(provider) {
+      var pModels = byProvider[provider];
+      if (!pModels || !pModels.length) return;
+      var meta = providerMeta[provider] || { name: provider, icon: "", desc: "", tier: "paid" };
+      // Map provider id to gladiator id (codex -> openai for display)
+      var gid = provider === "codex" ? "openai" : provider;
+      newGladiators.push({
+        id: gid,
+        name: meta.name,
+        icon: meta.icon || (pModels[0].icon || ""),
+        tier: meta.tier,
+        desc: meta.desc,
+        variants: pModels.map(function(m) {
+          return {
+            model: m.model || m.id.split(":")[1] || m.id,
+            label: m.label || m.name,
+            type: m.type || "command"
+          };
+        })
+      });
+    });
+
+    // Rebuild free gladiators: group ollama models by family
+    var ollamaModels = byProvider["ollama"] || [];
+    if (ollamaModels.length > 0) {
+      var ollamaFamilies = {};
+      var familyIcons = {
+        llama: "\uD83E\uDD99", mistral: "\uD83C\uDF2A\uFE0F", qwen: "\uD83C\uDFEF",
+        gemma: "\uD83D\uDC8E", phi: "\uD83E\uDDE0", deepseek: "\uD83D\uDD2D"
+      };
+      ollamaModels.forEach(function(m) {
+        var modelName = m.model || m.id.split(":")[1] || m.id;
+        var family = modelName.replace(/[0-9.:_-].*/g, "").toLowerCase();
+        if (!family) family = "other";
+        if (!ollamaFamilies[family]) ollamaFamilies[family] = [];
+        ollamaFamilies[family].push({
+          model: "ollama:" + modelName,
+          label: m.label || m.name,
+          type: "huggingface_local"
+        });
+      });
+      Object.keys(ollamaFamilies).forEach(function(family) {
+        var displayName = family.charAt(0).toUpperCase() + family.slice(1);
+        newGladiators.push({
+          id: family,
+          name: displayName,
+          icon: familyIcons[family] || "\uD83E\uDD16",
+          tier: "free",
+          desc: "ollama run <model>",
+          variants: ollamaFamilies[family]
+        });
+      });
+    } else {
+      // Keep existing free gladiators from hardcoded list as fallback
+      GLADIATORS.forEach(function(g) {
+        if (g.tier === "free") newGladiators.push(g);
+      });
+    }
+
+    // Only update if we actually got paid models
+    if (newGladiators.some(function(g) { return g.tier === "paid"; })) {
+      GLADIATORS = newGladiators;
+      // Reset variant indices for gladiators whose variant count changed
+      GLADIATORS.forEach(function(g) {
+        var idx = gladiatorVariants[g.id] || 0;
+        if (idx >= g.variants.length) gladiatorVariants[g.id] = 0;
+      });
+      renderGladiatorGrid();
+      console.log("[Colosseum] Models refreshed from server:", models.length, "models across", Object.keys(byProvider).length, "providers");
+    }
+
+    // Stop polling once probed models arrive (they have 'provider' field)
+    if (models.some(function(m) { return m.provider; }) && _modelPollTimer) {
+      clearInterval(_modelPollTimer);
+      _modelPollTimer = null;
+    }
+  }).catch(function() {
+    // Silently use hardcoded fallback
+  });
+}
+
+// Default selection
+selectedGladiators["claude"] = true;
+selectedGladiators["gemini"] = true;
+renderGladiatorGrid();
+renderQuotaPanel();
+fetchQuotaStates();
+
+// Fetch dynamic models — poll every 5s until probed results arrive
+refreshGladiatorsFromAPI();
+_modelPollTimer = setInterval(refreshGladiatorsFromAPI, 5000);
+syncCustomModelForm();
+
+document.getElementById("quota-save").addEventListener("click", function() {
+  saveQuotaSettings().catch(function(e) {
+    toast("Could not save quota settings: " + (e.message || ""));
+  });
+});
+document.getElementById("paid-depletion-action").addEventListener("change", updateQuotaPolicyNote);
+document.getElementById("free-fallback-model").addEventListener("change", updateQuotaPolicyNote);
+document.getElementById("build-persona-btn").addEventListener("click", function() {
+  openPersonaBuilderModal(null);
+});
+
+document.getElementById("back-to-setup").addEventListener("click", function() {
+  show("setup");
+});
+
+/* ── Depth slider ── */
+var depthSlider = document.getElementById("depth");
+var depthVal = document.getElementById("depth-val");
+var DEPTH_LABELS = {
+  1: "Quick",
+  2: "Brief",
+  3: "Standard",
+  4: "Thorough",
+  5: "Deep Dive"
+};
+var DEPTH_PROFILES = {
+  1: { min_novelty: 0.05, convergence: 0.40, confidence: 0.55 },
+  2: { min_novelty: 0.10, convergence: 0.55, confidence: 0.65 },
+  3: { min_novelty: 0.18, convergence: 0.75, confidence: 0.78 },
+  4: { min_novelty: 0.25, convergence: 0.85, confidence: 0.85 },
+  5: { min_novelty: 0.30, convergence: 0.92, confidence: 0.92 }
+};
+depthSlider.addEventListener("input", function() {
+  var v = parseInt(depthSlider.value);
+  depthVal.textContent = v + (v === 1 ? " round" : " rounds") + " — " + (DEPTH_LABELS[v] || "");
+});
+
+/* ── Mode toggle ── */
+var modeLive = document.getElementById("mode-live");
+var modeResult = document.getElementById("mode-result");
+
+modeLive.addEventListener("click", function() {
+  currentMode = "live";
+  modeLive.classList.add("active");
+  modeResult.classList.remove("active");
+});
+
+modeResult.addEventListener("click", function() {
+  currentMode = "result";
+  modeResult.classList.add("active");
+  modeLive.classList.remove("active");
+});
+
+/* ── Judge toggle ── */
+var judgeAuto = document.getElementById("judge-auto");
+var judgeHuman = document.getElementById("judge-human");
+var judgeNote = document.getElementById("judge-note");
+
+var JUDGE_NOTES = {
+  automated: "AI will evaluate plans and render the verdict.",
+  human: "You will review each round and decide the outcome yourself."
+};
+
+judgeAuto.addEventListener("click", function() {
+  currentJudgeMode = "automated";
+  judgeAuto.classList.add("active");
+  judgeHuman.classList.remove("active");
+  judgeNote.textContent = JUDGE_NOTES.automated;
+});
+
+judgeHuman.addEventListener("click", function() {
+  currentJudgeMode = "human";
+  judgeHuman.classList.add("active");
+  judgeAuto.classList.remove("active");
+  judgeNote.textContent = JUDGE_NOTES.human;
+});
+
+/* ── File attachments ── */
+var fileDrop = document.getElementById("file-drop");
+var fileInput = document.getElementById("file-input");
+
+fileDrop.addEventListener("click", function() { fileInput.click(); });
+fileDrop.addEventListener("dragover", function(e) { e.preventDefault(); fileDrop.classList.add("dragover"); });
+fileDrop.addEventListener("dragleave", function() { fileDrop.classList.remove("dragover"); });
+fileDrop.addEventListener("drop", function(e) {
+  e.preventDefault();
+  fileDrop.classList.remove("dragover");
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener("change", function() { handleFiles(fileInput.files); fileInput.value = ""; });
+
+function handleFiles(fileList) {
+  Array.from(fileList).forEach(function(file) {
+    var isImage = isImageUpload(file);
+    var maxBytes = isImage ? MAX_IMAGE_FILE_BYTES : MAX_TEXT_FILE_BYTES;
+    if (file.size > maxBytes) {
+      toast(file.name + " is too large (max " + (isImage ? "4 MB for images" : "100 KB for text") + ").");
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function() {
+      attachedFiles.push({
+        name: file.name,
+        content: reader.result,
+        size: file.size,
+        kind: isImage ? "inline_image" : "inline_text",
+        mediaType: isImage ? (file.type || guessImageMediaType(file.name)) : "text/plain"
+      });
+      renderFileList();
+    };
+    if (isImage) reader.readAsDataURL(file);
+    else reader.readAsText(file);
+  });
+}
+
+function renderFileList() {
+  var list = document.getElementById("file-list");
+  if (!attachedFiles.length) { list.innerHTML = ""; return; }
+  list.innerHTML = attachedFiles.map(function(f, i) {
+    var sizeStr = f.size < 1024 ? f.size + " B" : (f.size / 1024).toFixed(1) + " KB";
+    var kindLabel = f.kind === "inline_image" ? "Image" : "Text";
+    var mediaLabel = f.kind === "inline_image" ? (f.mediaType || "image") : "plain text";
+    var thumb = f.kind === "inline_image"
+      ? '<img class="file-thumb" src="' + esc(f.content) + '" alt="' + esc(f.name) + '"/>'
+      : '<div class="file-thumb file-thumb-text">TXT</div>';
+    return '<div class="file-item">' +
+      '<div class="file-item-main">' +
+      thumb +
+      '<div class="file-item-copy">' +
+      '<span class="file-item-name">' + esc(f.name) + '</span>' +
+      '<span class="file-item-meta"><span class="file-badge file-badge-' + esc(f.kind || "inline_text") + '">' + esc(kindLabel) + '</span>' +
+      '<span class="file-item-size">' + esc(mediaLabel) + ' · ' + sizeStr + '</span></span>' +
+      '</div></div>' +
+      '<span>' +
+      '<button class="remove-btn" data-fi="' + i + '">Remove</button></span>' +
+      '</div>';
+  }).join("");
+  list.querySelectorAll(".remove-btn").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      attachedFiles.splice(parseInt(btn.dataset.fi), 1);
+      renderFileList();
+    });
+  });
+}
+
+/* ── CLI Registration ── */
+document.getElementById("add-cli-btn").addEventListener("click", function() {
+  var form = document.getElementById("cli-form");
+  form.classList.toggle("hidden");
+  syncCustomModelForm();
+});
+
+function syncCustomModelForm() {
+  var type = document.getElementById("cli-type").value;
+  var tier = document.getElementById("cli-tier").value;
+  var cmd = document.getElementById("cli-cmd");
+  var modelInput = document.getElementById("cli-model-id");
+  var quotaInput = document.getElementById("cli-quota-key");
+  var help = document.getElementById("cli-help");
+  if (type === "command") {
+    cmd.disabled = false;
+    cmd.placeholder = "CLI command (e.g. /opt/my_model_cli --json)";
+    modelInput.placeholder = "Model id (optional)";
+  } else if (type === "ollama") {
+    cmd.disabled = true;
+    cmd.value = "";
+    modelInput.placeholder = "Ollama model id (e.g. my-model:latest)";
+  } else {
+    cmd.disabled = true;
+    cmd.value = "";
+    modelInput.placeholder = "Local HF/Ollama model id (e.g. org/model or llama3.3)";
+  }
+  quotaInput.disabled = tier !== "paid";
+  if (tier !== "paid") quotaInput.value = "";
+  help.textContent = tier === "paid"
+    ? "Paid custom models can use the same quota tracker. Give them a quota key or let Colosseum generate one."
+    : "Free custom models can join debates immediately and can also be used as fallback models. Image-aware custom CLIs can read metadata.image_inputs for shared VLM debates.";
+}
+
+document.getElementById("cli-type").addEventListener("change", syncCustomModelForm);
+document.getElementById("cli-tier").addEventListener("change", syncCustomModelForm);
+
+document.getElementById("cli-save").addEventListener("click", function() {
+  var name = document.getElementById("cli-name").value.trim();
+  var providerType = document.getElementById("cli-type").value;
+  var tier = document.getElementById("cli-tier").value;
+  var cmd = document.getElementById("cli-cmd").value.trim();
+  var modelId = document.getElementById("cli-model-id").value.trim();
+  var desc = document.getElementById("cli-desc").value.trim();
+  var quotaKey = document.getElementById("cli-quota-key").value.trim();
+  if (!name) return toast("Enter a name for the gladiator.");
+  if (providerType === "command" && !cmd) return toast("Enter the CLI command.");
+  if (providerType !== "command" && !modelId) return toast("Enter the model id.");
+
+  var id = "custom-" + name.toLowerCase().replace(/[^a-z0-9]/g, "-");
+
+  // Check duplicate
+  var allIds = GLADIATORS.map(function(g) { return g.id; }).concat(customModels.map(function(m) { return m.id; }));
+  if (allIds.indexOf(id) !== -1) {
+    return toast("A gladiator with this name already exists.");
+  }
+
+  var newModel = normalizeCustomModel({
+    id: id,
+    name: name,
+    desc: desc || (providerType === "command" ? cmd.split(" ")[0] : modelId),
+    type: providerType,
+    tier: tier,
+    model: modelId || name,
+    command: providerType === "command" ? cmd.split(" ").filter(Boolean) : [],
+    quota_key: tier === "paid" ? (quotaKey || ("paid:custom:" + id)) : null
+  });
+
+  customModels.push(newModel);
+  saveCustomModels(customModels);
+  renderGladiatorGrid();
+  renderRegisteredList();
+  renderQuotaPanel();
+
+  document.getElementById("cli-name").value = "";
+  document.getElementById("cli-model-id").value = "";
+  document.getElementById("cli-cmd").value = "";
+  document.getElementById("cli-desc").value = "";
+  document.getElementById("cli-quota-key").value = "";
+  document.getElementById("cli-form").classList.add("hidden");
+  syncCustomModelForm();
+
+  toast("Forged: " + name);
+});
+
+function renderRegisteredList() {
+  var list = document.getElementById("registered-list");
+  if (!customModels.length) { list.innerHTML = ""; return; }
+  list.innerHTML = customModels.map(function(m) {
+    return '<div class="registered-item">' +
+      '<span>' + esc(m.name) + ' <small>(' + esc(m.type) + ' · ' + esc(m.tier) + ' · ' + esc(m.desc) + ')</small></span>' +
+      '<button class="remove-btn" data-rid="' + esc(m.id) + '">Remove</button>' +
+      '</div>';
+  }).join("");
+
+  list.querySelectorAll(".remove-btn").forEach(function(btn) {
+    btn.addEventListener("click", function() {
+      var rid = btn.dataset.rid;
+      customModels = customModels.filter(function(m) { return m.id !== rid; });
+      delete selectedGladiators[rid];
+      saveCustomModels(customModels);
+      renderGladiatorGrid();
+      renderRegisteredList();
+      renderQuotaPanel();
+      toast("Removed.");
+    });
+  });
+}
+renderRegisteredList();
+
+/* ── Persona modal ── */
+var personaModalTarget = null;  // gladiator id being edited
+var personaModalMode = "apply"; // "apply" or "preview"
+
+function openPersonaModal(gid) {
+  personaModalTarget = gid;
+  personaModalMode = "apply";
+  var nameField = document.getElementById("persona-name");
+  var editor = document.getElementById("persona-editor");
+  nameField.value = "";
+  editor.value = (gladiatorPersonas[gid] && gladiatorPersonas[gid].persona_content) || "";
+  document.getElementById("persona-modal-title").textContent = "Custom Persona";
+  document.getElementById("persona-name-row").classList.remove("hidden");
+  document.getElementById("persona-apply-btn").classList.remove("hidden");
+  document.getElementById("persona-save-server-btn").classList.remove("hidden");
+  editor.readOnly = false;
+  show("persona-modal");
+}
+
+function openPersonaModalWithDraft(name, content, gid) {
+  personaModalTarget = gid || null;
+  personaModalMode = "apply";
+  var nameField = document.getElementById("persona-name");
+  var editor = document.getElementById("persona-editor");
+  nameField.value = name || "";
+  editor.value = content || "";
+  document.getElementById("persona-modal-title").textContent = gid ? "Custom Persona" : "Generated Persona";
+  document.getElementById("persona-name-row").classList.remove("hidden");
+  if (gid) document.getElementById("persona-apply-btn").classList.remove("hidden");
+  else document.getElementById("persona-apply-btn").classList.add("hidden");
+  document.getElementById("persona-save-server-btn").classList.remove("hidden");
+  editor.readOnly = false;
+  show("persona-modal");
+}
+
+function openPersonaBuilderModal(gid) {
+  personaBuilderTarget = gid || null;
+  document.getElementById("builder-persona-name").value = "";
+  document.getElementById("builder-profession").value = "";
+  document.getElementById("builder-personality").value = "";
+  document.getElementById("builder-style").value = "";
+  document.getElementById("builder-notes").value = "";
+  show("persona-builder-modal");
+}
+
+function previewPersona(personaId) {
+  personaModalMode = "preview";
+  api("/personas/" + personaId).then(function(data) {
+    var editor = document.getElementById("persona-editor");
+    editor.value = data.content || "";
+    editor.readOnly = true;
+    document.getElementById("persona-modal-title").textContent = "Persona: " + personaId.replace(/_/g, " ");
+    document.getElementById("persona-name-row").classList.add("hidden");
+    document.getElementById("persona-apply-btn").classList.add("hidden");
+    document.getElementById("persona-save-server-btn").classList.add("hidden");
+    show("persona-modal");
+  }).catch(function() {
+    toast("Could not load persona.");
+  });
+}
+
+document.getElementById("persona-apply-btn").addEventListener("click", function() {
+  var content = document.getElementById("persona-editor").value.trim();
+  if (content && personaModalTarget) {
+    gladiatorPersonas[personaModalTarget] = { persona_id: "__custom__", persona_content: content };
+    toast("Persona applied to this gladiator.");
+  }
+  hide("persona-modal");
+  resetPersonaSelectValue(personaModalTarget);
+});
+
+document.getElementById("persona-save-server-btn").addEventListener("click", function() {
+  var name = document.getElementById("persona-name").value.trim();
+  var content = document.getElementById("persona-editor").value.trim();
+  if (!name) return toast("Enter a name first.");
+  if (!content) return toast("Write the persona content.");
+
+  var pid = name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  api("/personas", {
+    method: "POST",
+    body: JSON.stringify({ persona_id: pid, content: content })
+  }).then(function(meta) {
+    toast("Saved: " + meta.name);
+    // Apply to current gladiator too
+    if (personaModalTarget) {
+      gladiatorPersonas[personaModalTarget] = { persona_id: pid, persona_content: content };
+    }
+    // Refresh persona list
+    fetchPersonas().then(function() { renderGladiatorGrid(); });
+    hide("persona-modal");
+  }).catch(function(e) {
+    toast("Save failed: " + (e.message || ""));
+  });
+});
+
+document.getElementById("persona-cancel").addEventListener("click", function() {
+  hide("persona-modal");
+  if (personaModalMode === "apply" && personaModalTarget && !gladiatorPersonas[personaModalTarget]) {
+    resetPersonaSelectValue(personaModalTarget);
+  }
+});
+
+document.getElementById("builder-generate-btn").addEventListener("click", function() {
+  var profession = document.getElementById("builder-profession").value.trim();
+  var personality = document.getElementById("builder-personality").value.trim();
+  var style = document.getElementById("builder-style").value.trim();
+  if (!profession) return toast("Enter your job or role first.");
+  if (!personality) return toast("Describe your personality in a few words.");
+  if (!style) return toast("Describe your debate style.");
+
+  api("/personas/generate", {
+    method: "POST",
+    body: JSON.stringify({
+      persona_name: document.getElementById("builder-persona-name").value.trim() || null,
+      profession: profession,
+      personality: personality,
+      debate_style: style,
+      free_text: document.getElementById("builder-notes").value.trim() || null
+    })
+  }).then(function(data) {
+    hide("persona-builder-modal");
+    openPersonaModalWithDraft(data.name || "", data.content || "", personaBuilderTarget);
+    personaBuilderTarget = null;
+    toast("Draft persona generated. Review and tweak it if needed.");
+  }).catch(function(e) {
+    toast("Could not generate persona: " + (e.message || ""));
+  });
+});
+
+document.getElementById("builder-cancel").addEventListener("click", function() {
+  hide("persona-builder-modal");
+  resetPersonaSelectValue(personaBuilderTarget);
+  personaBuilderTarget = null;
+});
+
+/* ── Build payload ── */
+function buildProviderPayloadFromVariant(gladiatorId, variant, tier) {
+  var provider = { type: variant.type, model: variant.model };
+  if (tier === "paid") {
+    provider.billing_tier = "paid";
+    provider.quota_key = quotaKeyForGladiator(gladiatorId);
+  } else {
+    provider.billing_tier = "free";
+  }
+  if (variant.type === "huggingface_local") {
+    var ollamaModel = variant.model.replace("ollama:", "");
+    provider.ollama_model = ollamaModel;
+    provider.hf_model = ollamaModel;
+  }
+  if (variant.type === "ollama") {
+    provider.ollama_model = variant.model.replace("ollama:", "");
+  }
+  return provider;
+}
+
+function buildProviderPayloadFromCustomModel(model) {
+  var rawModel = model.model || "";
+  var normalizedModel = rawModel.replace(/^ollama:/, "").replace(/^hf:/, "");
+  var provider = {
+    type: model.type,
+    model: model.model,
+    billing_tier: model.tier === "paid" ? "paid" : "free"
+  };
+  if (model.command && model.command.length) provider.command = model.command;
+  if (model.tier === "paid" && model.quota_key) provider.quota_key = model.quota_key;
+  if (model.type === "ollama") {
+    provider.ollama_model = normalizedModel;
+    provider.model = "ollama:" + normalizedModel;
+  } else if (model.type === "huggingface_local") {
+    provider.hf_model = normalizedModel;
+    provider.ollama_model = normalizedModel;
+    provider.model = rawModel.indexOf("ollama:") === 0 || rawModel.indexOf("hf:") === 0 ? rawModel : "hf:" + normalizedModel;
+  }
+  return provider;
+}
+
+function findVariantByModel(modelId) {
+  var found = null;
+  GLADIATORS.some(function(g) {
+    return (g.variants || []).some(function(v) {
+      if (v.model === modelId) {
+        found = { gladiator: g, variant: v };
+        return true;
+      }
+      return false;
+    });
+  });
+  if (found) return found;
+  customModels.some(function(m) {
+    if (m.model === modelId || ("ollama:" + m.model) === modelId || ("hf:" + m.model) === modelId) {
+      found = { custom: true, model: m };
+      return true;
+    }
+    return false;
+  });
+  return found;
+}
+
+function buildPaidProviderPolicy() {
+  var action = document.getElementById("paid-depletion-action").value;
+  var fallbackModel = document.getElementById("free-fallback-model").value || DEFAULT_FALLBACK_MODEL;
+  var policy = { on_exhaustion: action };
+  if (action === "switch_to_free") {
+    var fallback = findVariantByModel(fallbackModel);
+    if (fallback) {
+      policy.fallback_provider = fallback.custom
+        ? buildProviderPayloadFromCustomModel(fallback.model)
+        : buildProviderPayloadFromVariant(
+            fallback.gladiator.id,
+            fallback.variant,
+            fallback.gladiator.tier
+          );
+    }
+  }
+  return policy;
+}
+
+function validatePaidSelection() {
+  var blocked = [];
+  GLADIATORS.forEach(function(g) {
+    if (!selectedGladiators[g.id] || g.tier !== "paid") return;
+    if (isGladiatorQuotaBlocked(g)) blocked.push(g.name);
+  });
+  customModels.forEach(function(m) {
+    if (!selectedGladiators[m.id] || m.tier !== "paid") return;
+    if (isGladiatorQuotaBlocked(m)) blocked.push(m.name);
+  });
+  if (blocked.length) {
+    toast("Tracked paid quota is exhausted for: " + blocked.join(", "));
+    return false;
+  }
+
+  if (document.getElementById("paid-depletion-action").value === "wait_for_reset") {
+    var missingReset = [];
+    GLADIATORS.forEach(function(g) {
+      if (!selectedGladiators[g.id] || g.tier !== "paid") return;
+      var state = quotaStateForEntry(g);
+      if (isTrackedQuotaState(state) && !state.reset_at) missingReset.push(g.name);
+    });
+    customModels.forEach(function(m) {
+      if (!selectedGladiators[m.id] || m.tier !== "paid") return;
+      var state = quotaStateForEntry(m);
+      if (isTrackedQuotaState(state) && !state.reset_at) missingReset.push(m.name);
+    });
+    if (missingReset.length) {
+      toast("Set a reset time before using wait mode for: " + missingReset.join(", "));
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function startPolicyNote() {
+  var action = document.getElementById("paid-depletion-action").value;
+  if (action === "switch_to_free") {
+    var fallbackSelect = document.getElementById("free-fallback-model");
+    var label = fallbackSelect && fallbackSelect.options[fallbackSelect.selectedIndex] ? fallbackSelect.options[fallbackSelect.selectedIndex].text : "the free fallback";
+    return "Arena locked. If paid quota runs out, later turns will switch to " + label + ".";
+  }
+  if (action === "wait_for_reset") {
+    return "Arena locked. If paid quota runs out, Colosseum will pause until the tracked reset time.";
+  }
+  return "Arena locked. Preparing shared context and scheduling gladiators...";
+}
+
+function buildPayload() {
+  var topic = document.getElementById("topic").value.trim();
+  var depth = parseInt(document.getElementById("depth").value);
+  var topicType = document.getElementById("topic-type").value;
+  var codebaseUrl = document.getElementById("codebase-url").value.trim();
+
+  var agents = [];
+
+  // Built-in gladiators
+  GLADIATORS.forEach(function(g) {
+    if (!selectedGladiators[g.id]) return;
+    var vIdx = gladiatorVariants[g.id] || 0;
+    var v = g.variants[vIdx];
+    var persona = gladiatorPersonas[g.id];
+    var agentObj = {
+      agent_id: g.id,
+      display_name: g.name + " (" + v.label + ")",
+      specialty: g.name + " " + v.label,
+      provider: buildProviderPayloadFromVariant(g.id, v, g.tier)
+    };
+    if (persona) {
+      agentObj.persona_id = persona.persona_id;
+      agentObj.persona_content = persona.persona_content;
+    }
+    agents.push(agentObj);
+  });
+
+  // Custom models
+  customModels.forEach(function(m) {
+    if (!selectedGladiators[m.id]) return;
+    var persona = gladiatorPersonas[m.id];
+    agents.push({
+      agent_id: m.id,
+      display_name: m.name,
+      specialty: m.desc,
+      provider: buildProviderPayloadFromCustomModel(m),
+      persona_id: persona ? persona.persona_id : undefined,
+      persona_content: persona ? persona.persona_content : undefined
+    });
+  });
+
+  var contextSources = [{
+    source_id: "topic",
+    kind: "inline_text",
+    label: "Debate topic",
+    content: topic
+  }];
+
+  if (codebaseUrl) {
+    contextSources.push({
+      source_id: "codebase-url",
+      kind: "inline_text",
+      label: "Codebase reference",
+      content: "Codebase URL: " + codebaseUrl
+    });
+  }
+
+  contextSources = contextSources.concat(attachedFiles.map(function(f, i) {
+    var source = {
+      source_id: "file-" + i,
+      kind: f.kind || "inline_text",
+      label: f.name,
+      content: f.content
+    };
+    if ((f.kind || "inline_text") === "inline_image") {
+      source.media_type = f.mediaType || guessImageMediaType(f.name);
+      source.description = "Shared image uploaded through the Colosseum arena UI.";
+    }
+    return source;
+  }));
+
+  return {
+    project_name: "Colosseum",
+    task: {
+      title: topic.length > 120 ? topic.slice(0, 120) : topic,
+      problem_statement: topic + (codebaseUrl ? "\n\nCodebase: " + codebaseUrl : ""),
+      task_type: topicType
+    },
+    context_sources: contextSources,
+    agents: agents,
+    judge: {
+      mode: currentJudgeMode,
+      minimum_confidence_to_stop: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).confidence,
+      prefer_merged_plan_on_close_scores: true
+    },
+    paid_provider_policy: buildPaidProviderPolicy(),
+    budget_policy: {
+      max_rounds: depth,
+      total_token_budget: 80000,
+      per_round_token_limit: 12000,
+      per_agent_message_limit: 1,
+      min_novelty_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).min_novelty,
+      convergence_threshold: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).convergence
+    }
+  };
+}
+
+/* ── Live mode helpers ── */
+var liveRunData = { plans: [], plan_evaluations: [], debate_rounds: [], verdict: null, budget_by_actor: {} };
+
+function appendLiveEntry(text, eventClass) {
+  var log = document.getElementById("live-log");
+  var entry = document.createElement("div");
+  entry.className = "live-entry" + (eventClass ? " event-" + eventClass : "");
+  entry.innerHTML = '<span class="live-time">' + timeStr() + '</span>' + esc(text);
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendAgentThinking(name, message) {
+  var log = document.getElementById("live-log");
+  var entry = document.createElement("div");
+  entry.className = "chat-thinking";
+  entry.innerHTML = '<span class="agent-badge">' + esc(name) + '</span> ' +
+    '<span class="thinking-dots">' + esc(message) + '</span>';
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendAgentPlan(evt) {
+  var log = document.getElementById("live-log");
+  var entry = document.createElement("div");
+  entry.className = "live-entry live-agent-plan";
+  var strengthTags = (evt.strengths || []).slice(0, 2).map(function(s) {
+    return '<span class="mini-tag">' + esc(s) + '</span>';
+  }).join("");
+  entry.innerHTML = '<span class="live-time">' + timeStr() + '</span>' +
+    '<div class="agent-plan-card">' +
+      '<div class="agent-plan-header">' +
+        '<span class="agent-badge">' + esc(evt.display_name || evt.agent_id) + '</span>' +
+        '<span class="plan-ready-label">Plan Ready</span>' +
+      '</div>' +
+      '<div class="agent-plan-summary">' + esc(evt.summary || "") + '</div>' +
+      '<div class="agent-plan-tags">' + strengthTags + '</div>' +
+    '</div>';
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendAgentMessage(evt) {
+  var log = document.getElementById("live-log");
+  var entry = document.createElement("div");
+  // Alternate alignment for debate feel
+  var agentIdx = 0;
+  var agents = Object.keys(liveRunData._agentOrder || {});
+  var aid = evt.agent_id || evt.display_name || "";
+  if (!liveRunData._agentOrder) liveRunData._agentOrder = {};
+  if (!(aid in liveRunData._agentOrder)) {
+    liveRunData._agentOrder[aid] = Object.keys(liveRunData._agentOrder).length;
+  }
+  agentIdx = liveRunData._agentOrder[aid];
+  var side = agentIdx % 2 === 0 ? "left" : "right";
+  entry.className = "chat-bubble chat-bubble-" + side;
+
+  var fullContent = evt.content || "";
+  var preview = fullContent.length > 400 ? fullContent.slice(0, 400) + "..." : fullContent;
+  var tokens = evt.usage ? evt.usage.total_tokens : 0;
+  var novelty = evt.novelty_score != null ? evt.novelty_score : "-";
+
+  // Extract rebuttals and concessions for chat display
+  var interactionHtml = "";
+  if ((evt.critique_count || 0) > 0 || (evt.defense_count || 0) > 0 || (evt.concession_count || 0) > 0) {
+    interactionHtml = '<div class="chat-interactions">';
+    if (evt.critique_count > 0) interactionHtml += '<span class="stat-pill critique">Rebuttals: ' + evt.critique_count + '</span>';
+    if (evt.defense_count > 0) interactionHtml += '<span class="stat-pill defense">Defenses: ' + evt.defense_count + '</span>';
+    if (evt.concession_count > 0) interactionHtml += '<span class="stat-pill concession">Concessions: ' + evt.concession_count + '</span>';
+    interactionHtml += '</div>';
+  }
+
+  entry.innerHTML =
+    '<div class="chat-header">' +
+      '<span class="agent-badge agent-badge-' + side + '">' + esc(evt.display_name || evt.agent_id) + '</span>' +
+      '<span class="chat-meta">' +
+        '<span class="chat-round">R' + (evt.round_index || "?") + '</span>' +
+        '<span class="agent-tokens">' + tokens.toLocaleString() + ' tok</span>' +
+      '</span>' +
+    '</div>' +
+    '<div class="chat-content">' + esc(preview) + '</div>' +
+    interactionHtml +
+    '<div class="chat-footer">' +
+      '<span class="stat-pill novelty">Novelty: ' + (typeof novelty === "number" ? novelty.toFixed(2) : novelty) + '</span>' +
+      '<span class="live-time">' + timeStr() + '</span>' +
+    '</div>';
+
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendJudgeDecision(evt) {
+  var log = document.getElementById("live-log");
+  var entry = document.createElement("div");
+  entry.className = "live-entry live-judge-decision";
+
+  var action = evt.action || "unknown";
+  var actionLabel = action === "finalize" ? "FINALIZE" :
+                    action === "continue_debate" ? "CONTINUE" :
+                    action === "request_revision" ? "REVISION" : action.toUpperCase();
+
+  var html = '<span class="live-time">' + timeStr() + '</span>' +
+    '<div class="judge-decision-card">' +
+      '<div class="judge-decision-header">' +
+        '<span class="judge-badge">Judge</span>' +
+        '<span class="judge-action judge-action-' + esc(action) + '">' + esc(actionLabel) + '</span>' +
+      '</div>' +
+      '<div class="judge-reasoning">' + esc(evt.reasoning || "") + '</div>' +
+      '<div class="judge-stats">' +
+        '<span class="stat-pill">Confidence: ' + (evt.confidence != null ? Number(evt.confidence).toFixed(2) : "-") + '</span>' +
+        '<span class="stat-pill">Disagreement: ' + (evt.disagreement_level != null ? Number(evt.disagreement_level).toFixed(2) : "-") + '</span>' +
+        '<span class="stat-pill">Budget: ' + (evt.budget_pressure != null ? (Number(evt.budget_pressure) * 100).toFixed(0) + "%" : "-") + '</span>' +
+      '</div>' +
+    '</div>';
+
+  entry.innerHTML = html;
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+}
+
+function handleSSEEvent(evt) {
+  if (!evt || !evt.phase) return;
+  var phase = evt.phase;
+
+  if (phase === "init") {
+    currentRunId = evt.run_id || currentRunId;
+    liveRunData = { plans: [], plan_evaluations: [], debate_rounds: [], verdict: null, budget_by_actor: {}, _agentOrder: liveRunData._agentOrder || {} };
+    appendLiveEntry("Debate arena opened. Run: " + (evt.run_id || "").slice(0, 8), "debate");
+    setBattleNote("Run initialized. Freezing shared context for all participants.", true);
+  } else if (phase === "context") {
+    appendLiveEntry(evt.message || "Preparing context...", "plan");
+    setBattleNote("Freezing and normalizing the shared context bundle...", true);
+  } else if (phase === "planning") {
+    appendLiveEntry(evt.message || "Generating plans...", "plan");
+    setBattleNote("Generating independent plans. This is often the longest step with external CLIs.", true);
+  } else if (phase === "agent_planning") {
+    appendAgentThinking(evt.display_name || evt.agent_id, "Crafting strategy...");
+  } else if (phase === "plan_ready") {
+    appendAgentPlan(evt);
+    liveRunData.plans.push(evt);
+  } else if (phase === "plans_ready") {
+    liveRunData.plans = evt.plans || [];
+    liveRunData.plan_evaluations = evt.evaluations || [];
+    var names = liveRunData.plans.map(function(p) { return p.display_name; }).join(", ");
+    appendLiveEntry("All plans evaluated: " + names, "plan");
+  } else if (phase === "debate_round") {
+    // Add round separator in debate view
+    var log = document.getElementById("live-log");
+    var sep = document.createElement("div");
+    sep.className = "round-separator";
+    sep.innerHTML = '<span class="round-sep-line"></span><span class="round-sep-label">Round ' +
+      (evt.round_index || "?") + ': ' + esc(evt.round_type || "debate") + '</span><span class="round-sep-line"></span>';
+    log.appendChild(sep);
+    setBattleNote("Debate round " + (evt.round_index || "") + " in progress. Agents are reading and responding to each other's arguments.", true);
+  } else if (phase === "agent_thinking") {
+    appendAgentThinking(evt.display_name || evt.agent_id, "Thinking... (Round " + evt.round_index + ")");
+  } else if (phase === "agent_message") {
+    appendAgentMessage(evt);
+  } else if (phase === "round_complete" && evt.round) {
+    liveRunData.debate_rounds.push(evt.round);
+    var msgCount = evt.round.messages ? evt.round.messages.length : 0;
+    appendLiveEntry("Round " + evt.round.index + " complete (" + msgCount + " messages, " + (evt.round.usage ? evt.round.usage.total_tokens : 0) + " tokens)", "debate");
+  } else if (phase === "judge_decision") {
+    appendJudgeDecision(evt);
+  } else if (phase === "judging") {
+    appendLiveEntry(evt.message || "Rendering final verdict...", "verdict");
+    setBattleNote("Judge is synthesizing the final verdict and usage report...", true);
+  } else if (phase === "complete") {
+    liveRunData.verdict = evt.verdict || null;
+    liveRunData.budget_by_actor = evt.budget_by_actor || {};
+    appendLiveEntry("Debate complete!", "verdict");
+    if (currentRunId) {
+      api("/runs/" + encodeURIComponent(currentRunId))
+        .then(function(run) { renderResult(run); })
+        .catch(function() { renderLiveResult(); });
+    } else {
+      renderLiveResult();
+    }
+    // Show setup again and re-enable button
+    show("setup");
+    var btn = document.getElementById("start-btn");
+    btn.disabled = false;
+    btn.textContent = "FIGHT!";
+    setBattleNote("Debate finished. Review the full debate, strategies, and verdict below.", false);
+  } else if (phase === "error") {
+    appendLiveEntry("Error: " + (evt.message || "Unknown error"), "error");
+    setBattleNote("The run ended with an error. Try reducing context size or switching to fewer models.", false);
+  } else {
+    appendLiveEntry(phase + (evt.message ? ": " + evt.message : ""), "debate");
+  }
+}
+
+function renderLiveResult() {
+  // Build a run-like object from accumulated SSE data
+  var run = {
+    plans: liveRunData.plans,
+    plan_evaluations: liveRunData.plan_evaluations,
+    debate_rounds: liveRunData.debate_rounds,
+    verdict: liveRunData.verdict
+  };
+  renderPlans(run);
+  renderDebate(run);
+  renderVerdict(run);
+
+  // Render usage from budget_by_actor
+  var budgetByActor = liveRunData.budget_by_actor;
+  var actorKeys = Object.keys(budgetByActor);
+  if (actorKeys.length) {
+    var maxTokens = 1;
+    actorKeys.forEach(function(k) {
+      var t = budgetByActor[k].total_tokens || 0;
+      if (t > maxTokens) maxTokens = t;
+    });
+
+    var grid = document.getElementById("usage-grid");
+    grid.innerHTML = actorKeys.map(function(k) {
+      var u = budgetByActor[k];
+      var total = u.total_tokens || 0;
+      var pct = Math.round((total / maxTokens) * 100);
+      return '<div class="usage-card">' +
+        '<div class="usage-card-name">' + esc(k) + '</div>' +
+        '<div class="usage-card-total">' + total.toLocaleString() + '</div>' +
+        '<div class="usage-card-detail">' +
+          'Prompt: ' + (u.prompt_tokens || 0).toLocaleString() + '<br>' +
+          'Completion: ' + (u.completion_tokens || 0).toLocaleString() +
+        '</div>' +
+        '<div class="usage-bar-wrap"><div class="usage-bar" style="width:' + pct + '%"></div></div>' +
+        '</div>';
+    }).join("");
+    show("usage-sec");
+  }
+}
+
+function processSSEChunk(text) {
+  var events = [];
+  var lines = text.split("\n");
+  var buffer = "";
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.indexOf("data: ") === 0) {
+      buffer += line.slice(6);
+    } else if (line === "" && buffer) {
+      try {
+        events.push(JSON.parse(buffer));
+      } catch (e) {
+        // not valid JSON, skip
+      }
+      buffer = "";
+    }
+  }
+  // leftover
+  if (buffer) {
+    try {
+      events.push(JSON.parse(buffer));
+    } catch (e) { /* skip */ }
+  }
+  return events;
+}
+
+/* ── Start debate ── */
+document.getElementById("start-btn").addEventListener("click", function() {
+  var topic = document.getElementById("topic").value.trim();
+  if (!topic) return toast("Enter a battle topic first.");
+
+  var selectedCount = Object.keys(selectedGladiators).length;
+  if (selectedCount < 2) return toast("Choose at least 2 gladiators.");
+  if (!validatePaidSelection()) return;
+
+  var payload = buildPayload();
+  var btn = document.getElementById("start-btn");
+  btn.disabled = true;
+  btn.textContent = "BATTLING...";
+  setBattleNote(startPolicyNote(), true);
+
+  // Reset result sections
+  hide("plans-sec");
+  hide("debate-sec");
+  hide("verdict-sec");
+  hide("usage-sec");
+
+  if (currentMode === "live") {
+    startLiveMode(payload, btn);
+  } else {
+    startResultMode(payload, btn);
+  }
+});
+
+function startLiveMode(payload, btn) {
+  // Transition: hide setup, show debate arena
+  hide("setup");
+  show("live-feed");
+  document.getElementById("live-log").innerHTML = "";
+  currentRunId = null;
+  liveRunData._agentOrder = {};
+  appendLiveEntry("The arena gates open... debate begins!", "debate");
+  setBattleNote("Live mode is streaming progress. Real CLI providers may pause for tens of seconds between updates.", true);
+
+  fetch("/runs/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }).then(function(response) {
+    if (!response.ok) {
+      return response.json().catch(function() { return {}; }).then(function(b) {
+        throw new Error(b.detail || "Stream request failed: " + response.status);
+      });
+    }
+
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var sseBuffer = "";
+
+    function readChunk() {
+      return reader.read().then(function(result) {
+        if (result.done) {
+          appendLiveEntry("Stream ended.", "verdict");
+          show("setup");
+          btn.disabled = false;
+          btn.textContent = "FIGHT!";
+          setBattleNote("Debate finished. Review the full debate, strategies, and verdict below.", false);
+          return;
+        }
+
+        sseBuffer += decoder.decode(result.value, { stream: true });
+
+        // Process complete SSE messages
+        var parts = sseBuffer.split("\n\n");
+        // Keep the last part as buffer (might be incomplete)
+        sseBuffer = parts.pop() || "";
+
+        parts.forEach(function(part) {
+          if (!part.trim()) return;
+          var events = processSSEChunk(part + "\n\n");
+          events.forEach(function(evt) {
+            handleSSEEvent(evt);
+          });
+        });
+
+        return readChunk();
+      });
+    }
+
+    return readChunk();
+	  }).catch(function(e) {
+	    appendLiveEntry("Error: " + (e.message || "Connection failed"), "error");
+	    show("setup");
+	    if (currentRunId) {
+	      appendLiveEntry("Stream disconnected. Recovering from the saved run artifact...", "debate");
+	      setBattleNote("Live stream disconnected. Polling the existing run instead of starting a second one.", true);
+	      recoverRun(currentRunId, btn);
+	      return;
+	    }
+	    appendLiveEntry("Stream failed before a run id was confirmed. Falling back to results mode...", "debate");
+	    setBattleNote("Live stream failed before initialization. Starting a results-only run once.", true);
+	    startResultMode(payload, btn);
+	  });
+}
+
+function startResultMode(payload, btn) {
+  hide("live-feed");
+  currentRunId = null;
+  setBattleNote("Results-only mode waits for the full artifact. With real CLI providers this can take 30-180 seconds.", true);
+
+  api("/runs", { method: "POST", body: JSON.stringify(payload) })
+    .then(function(run) {
+      currentRunId = run.run_id;
+      renderResult(run);
+      toast("Battle complete!");
+      setBattleNote("Battle finished. Review the verdict and resource tally below.", false);
+    })
+    .catch(function(e) {
+      toast("Error: " + (e.message || "Failed to start battle."));
+      setBattleNote("Battle failed before completion. Try a lighter model mix or smaller context.", false);
+    })
+    .then(function() {
+      btn.disabled = false;
+      btn.textContent = "FIGHT!";
+    });
+}
+
+function recoverRun(runId, btn, attempt) {
+  attempt = attempt || 0;
+  api("/runs/" + encodeURIComponent(runId))
+    .then(function(run) {
+      currentRunId = run.run_id;
+      if (run.status === "completed" || run.status === "failed" || run.status === "awaiting_human_judge") {
+        renderResult(run);
+        if (run.status === "completed") {
+          toast("Battle complete!");
+          setBattleNote("Recovered the saved run. Review the verdict and resource tally below.", false);
+        } else if (run.status === "awaiting_human_judge") {
+          setBattleNote("Recovered the saved run. Human judge input is required to continue.", false);
+        } else {
+          setBattleNote("Recovered the saved run, but it failed before completion.", false);
+        }
+        btn.disabled = false;
+        btn.textContent = "FIGHT!";
+        return;
+      }
+
+      setBattleNote("Recovering the saved run. The backend is still working; polling again shortly.", true);
+      window.setTimeout(function() {
+        recoverRun(runId, btn, attempt + 1);
+      }, 2500);
+    })
+    .catch(function() {
+      if (attempt >= 20) {
+        btn.disabled = false;
+        btn.textContent = "FIGHT!";
+        setBattleNote("Could not recover the saved run automatically. Use Past Battles to reopen it without starting a duplicate run.", false);
+        return;
+      }
+      window.setTimeout(function() {
+        recoverRun(runId, btn, attempt + 1);
+      }, 2500);
+    });
+}
+
+/* ── Render results ── */
+function renderResult(run) {
+  renderPlans(run);
+  renderDebate(run);
+  renderUsage(run);
+  renderRuntimeEvents(run);
+  renderVerdict(run);
+}
+
+function renderRuntimeEvents(run) {
+  var list = document.getElementById("events-list");
+  if (!list) return;
+  if (!run.runtime_events || !run.runtime_events.length) {
+    hide("events-sec");
+    return;
+  }
+  list.innerHTML = run.runtime_events.map(function(evt) {
+    var meta = evt.provider_label ? esc(evt.provider_label) : esc(evt.actor_label || evt.actor_id);
+    return '<div class="history-item">' +
+      '<div>' +
+        '<div class="history-title">' + meta + '</div>' +
+        '<div class="history-meta">' + esc(evt.event_type) + '</div>' +
+      '</div>' +
+      '<div class="history-meta notice-copy">' + esc(evt.message) + '</div>' +
+    '</div>';
+  }).join("");
+  show("events-sec");
+}
+
+function renderPlans(run) {
+  if (!run.plans || !run.plans.length) return;
+  var scores = {};
+  (run.plan_evaluations || []).forEach(function(e) { scores[e.plan_id] = e.overall_score; });
+
+  var el = document.getElementById("plans-grid");
+  el.innerHTML = run.plans.map(function(p) {
+    var evidenceTags = (p.evidence_basis || []).slice(0, 2).map(function(item) {
+      return '<span class="tag evidence">' + esc(item) + '</span>';
+    }).join("");
+    var strengthTags = (p.strengths || []).slice(0, 2).map(function(s) {
+      return '<span class="tag">' + esc(s) + '</span>';
+    }).join("");
+    var weakTags = (p.weaknesses || []).slice(0, 1).map(function(w) {
+      return '<span class="tag weak">' + esc(w) + '</span>';
+    }).join("");
+
+    return '<div class="plan-card">' +
+      '<h3>' + esc(p.display_name) + '</h3>' +
+      '<span class="plan-score">Score ' + fmt(scores[p.plan_id]) + '</span>' +
+      '<p>' + esc(p.summary) + '</p>' +
+      (evidenceTags ? '<div class="plan-evidence"><strong>Evidence</strong><div class="tag-row">' + evidenceTags + '</div></div>' : '') +
+      '<div class="tag-row">' + strengthTags + weakTags + '</div>' +
+      '</div>';
+  }).join("");
+
+  show("plans-sec");
+}
+
+function renderDebate(run) {
+  if (!run.debate_rounds || !run.debate_rounds.length) return;
+  var el = document.getElementById("debate-timeline");
+
+  el.innerHTML = run.debate_rounds.map(function(r) {
+    var tokenCount = (r.usage && r.usage.total_tokens) ? r.usage.total_tokens + " tokens" : "";
+    return '<div class="round-block">' +
+      '<div class="round-head">' +
+        '<h3>Round ' + r.index + ': ' + esc(r.round_type) + '</h3>' +
+        '<span class="round-tag">' + tokenCount + '</span>' +
+      '</div>' +
+      '<div class="round-body">' +
+        col("Key disagreements", r.summary ? r.summary.key_disagreements : []) +
+        col("Strongest arguments", r.summary ? r.summary.strongest_arguments : []) +
+        col("Hybrid ideas", r.summary ? r.summary.hybrid_opportunities : []) +
+      '</div>' +
+      '<div class="round-note">' + esc(r.summary ? (r.summary.moderator_note || "") : "") + '</div>' +
+      '</div>';
+  }).join("");
+
+  show("debate-sec");
+}
+
+function renderUsage(run) {
+  // Gather per-agent token usage from various sources
+  var agentUsage = {};
+
+  // From plans
+  if (run.plans) {
+    run.plans.forEach(function(p) {
+      if (p.usage) {
+        var key = p.agent_id || p.display_name || "Unknown";
+        if (!agentUsage[key]) {
+          agentUsage[key] = { name: p.display_name || key, total: 0, prompt: 0, completion: 0 };
+        }
+        agentUsage[key].total += (p.usage.total_tokens || 0);
+        agentUsage[key].prompt += (p.usage.prompt_tokens || 0);
+        agentUsage[key].completion += (p.usage.completion_tokens || 0);
+      }
+    });
+  }
+
+  // From debate rounds
+  if (run.debate_rounds) {
+    run.debate_rounds.forEach(function(r) {
+      if (r.agent_usages) {
+        r.agent_usages.forEach(function(au) {
+          var key = au.agent_id || au.display_name || "Unknown";
+          if (!agentUsage[key]) {
+            agentUsage[key] = { name: au.display_name || key, total: 0, prompt: 0, completion: 0 };
+          }
+          agentUsage[key].total += (au.total_tokens || 0);
+          agentUsage[key].prompt += (au.prompt_tokens || 0);
+          agentUsage[key].completion += (au.completion_tokens || 0);
+        });
+      }
+    });
+  }
+
+  // From top-level usage
+  if (run.agent_usages) {
+    run.agent_usages.forEach(function(au) {
+      var key = au.agent_id || au.display_name || "Unknown";
+      agentUsage[key] = {
+        name: au.display_name || key,
+        total: au.total_tokens || 0,
+        prompt: au.prompt_tokens || 0,
+        completion: au.completion_tokens || 0
+      };
+    });
+  }
+
+  var keys = Object.keys(agentUsage);
+  if (!keys.length) return;
+
+  // Find max for bar scaling
+  var maxTokens = 1;
+  keys.forEach(function(k) {
+    if (agentUsage[k].total > maxTokens) maxTokens = agentUsage[k].total;
+  });
+
+  var grid = document.getElementById("usage-grid");
+  grid.innerHTML = keys.map(function(k) {
+    var u = agentUsage[k];
+    var pct = Math.round((u.total / maxTokens) * 100);
+    return '<div class="usage-card">' +
+      '<div class="usage-card-name">' + esc(u.name) + '</div>' +
+      '<div class="usage-card-total">' + u.total.toLocaleString() + '</div>' +
+      '<div class="usage-card-detail">' +
+        'Prompt: ' + u.prompt.toLocaleString() + '<br>' +
+        'Completion: ' + u.completion.toLocaleString() +
+      '</div>' +
+      '<div class="usage-bar-wrap"><div class="usage-bar" style="width:' + pct + '%"></div></div>' +
+      '</div>';
+  }).join("");
+
+  show("usage-sec");
+}
+
+function renderVerdict(run) {
+  if (!run.verdict) return;
+  var v = run.verdict;
+  var el = document.getElementById("verdict-body");
+
+  var winnerNames = (v.winning_plan_ids || []).map(function(id) {
+    var p = (run.plans || []).find(function(x) { return x.plan_id === id; });
+    return p ? p.display_name : id.slice(0, 8);
+  });
+
+  var typeClass = v.verdict_type === "merged" ? "merged" : "winner";
+  var html = '<span class="verdict-type ' + typeClass + '">' +
+    esc(v.verdict_type.toUpperCase()) + ': ' + esc(winnerNames.join(" & ")) + '</span>';
+
+  html += '<div class="verdict-rationale">' + esc(v.rationale) + '</div>';
+  html += '<div class="verdict-details">';
+
+  if (v.selected_strengths && v.selected_strengths.length) {
+    html += '<div class="verdict-col"><h4>Strengths</h4>' + ul(v.selected_strengths) + '</div>';
+  }
+  if (v.rejected_risks && v.rejected_risks.length) {
+    html += '<div class="verdict-col"><h4>Risks Noted</h4>' + ul(v.rejected_risks) + '</div>';
+  }
+  if (v.synthesized_plan) {
+    html += '<div class="verdict-col"><h4>Merged Plan</h4><p style="font-size:0.84rem;margin:0">' +
+      esc(v.synthesized_plan.summary) + '</p></div>';
+  }
+  html += '</div>';
+  html += '<div class="verdict-meta">Stop: ' + esc(v.stop_reason) + ' &middot; Confidence: ' + fmt(v.confidence) + '</div>';
+
+  el.innerHTML = html;
+  show("verdict-sec");
+}
+
+/* ── History ── */
+document.getElementById("history-btn").addEventListener("click", function() {
+  api("/runs")
+    .then(function(runs) {
+      var list = document.getElementById("history-list");
+      if (!runs || !runs.length) {
+        list.innerHTML = '<p class="muted">No battles fought yet.</p>';
+      } else {
+        list.innerHTML = runs.map(function(r) {
+          return '<div class="history-item" data-id="' + esc(r.run_id) + '">' +
+            '<div>' +
+              '<div class="history-title">' + esc(r.task_title) + '</div>' +
+              '<div class="history-meta">' + esc(r.status) + ' &middot; ' + esc(r.verdict_type || "pending") + '</div>' +
+            '</div>' +
+            '<div class="history-meta">' + (r.total_tokens || 0) + ' tok</div>' +
+          '</div>';
+        }).join("");
+
+        list.querySelectorAll("[data-id]").forEach(function(item) {
+          item.addEventListener("click", function() {
+            api("/runs/" + item.dataset.id)
+              .then(function(run) {
+                currentRunId = run.run_id;
+                renderResult(run);
+                toast("Past battle loaded.");
+              })
+              .catch(function() { toast("Could not load battle."); });
+          });
+        });
+      }
+    })
+    .catch(function() { toast("Could not load history."); });
+});

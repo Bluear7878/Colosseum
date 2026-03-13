@@ -1,0 +1,40 @@
+[project]
+name = "colosseum"
+version = "0.1.0"
+description = "Multi-model planning, debate, and judging orchestration platform."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0,<1.0.0",
+  "httpx>=0.28.0,<1.0.0",
+  "pydantic>=2.10.0,<3.0.0",
+  "uvicorn>=0.35.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0.0",
+  "ruff>=0.11.0,<1.0.0",
+]
+
+[project.scripts]
+colosseum = "colosseum.cli:main"
+colosseum-api = "colosseum.main:run"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+colosseum = ["web/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -6,7 +6,7 @@ import traceback
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from colosseum.bootstrap import get_orchestrator
 
@@ -372,6 +372,27 @@ async def get_run(
         return orchestrator.load_run(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/pdf")
+async def download_run_pdf(
+    run_id: str,
+    orchestrator=Depends(get_orchestrator),
+):
+    try:
+        run = orchestrator.load_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from colosseum.services.pdf_report import generate_pdf
+
+    pdf_bytes = generate_pdf(run)
+    filename = f"colosseum-report-{run_id[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/runs/{run_id}/judge-actions", response_model=ExperimentRun)

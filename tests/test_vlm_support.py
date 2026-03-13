@@ -147,3 +147,18 @@ def test_orchestrator_handles_image_context(tmp_path):
     assert run.context_bundle is not None
     assert len(orchestrator.context_service.extract_image_inputs(run.context_bundle)) == 1
     assert any("visual evidence" in " ".join(plan.assumptions).lower() for plan in run.plans)
+
+
+def test_cli_wrapper_prompt_mentions_search_policy_when_present():
+    prompt = build_prompt(
+        {
+            "operation": "plan",
+            "instructions": "Review the task.",
+            "metadata": {
+                "search_policy": "Internet search is encouraged when the frozen bundle is insufficient.",
+            },
+        }
+    )
+
+    assert "Search policy:" in prompt
+    assert "Internet search is encouraged" in prompt

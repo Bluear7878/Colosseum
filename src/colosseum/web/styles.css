@@ -1791,6 +1791,15 @@ h1 {
 
 .report-actions {
   margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.btn-pdf {
+  padding: 8px 18px;
+  font-size: 0.84rem;
 }
 
 .text-btn-link {

@@ -289,6 +289,45 @@ h1 {
   cursor: not-allowed;
 }
 
+.gladiator-card.auth-blocked {
+  border-color: rgba(180, 100, 60, 0.4);
+}
+
+.auth-chip {
+  margin-top: 2px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(180, 80, 40, 0.18);
+  color: #f0a88a;
+}
+
+.btn-cli-login {
+  margin-top: 6px;
+  width: 100%;
+  padding: 5px 0;
+  border: 1px solid rgba(180, 100, 60, 0.5);
+  border-radius: 8px;
+  background: rgba(180, 80, 40, 0.15);
+  color: #f0a88a;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-cli-login:hover:not(:disabled) {
+  background: rgba(180, 80, 40, 0.3);
+  border-color: rgba(180, 100, 60, 0.8);
+}
+
+.btn-cli-login:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .gladiator-icon {
   font-size: 1.6rem;
   line-height: 1;

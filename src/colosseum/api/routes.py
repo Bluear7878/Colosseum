@@ -95,6 +95,31 @@ async def refresh_models() -> list[dict]:
     return models
 
 
+@router.post("/setup/auth/{tool_name}")
+async def trigger_auth(tool_name: str) -> dict:
+    """Launch CLI login for a provider tool (opens browser for OAuth)."""
+    import subprocess as _sp
+
+    from colosseum.cli import CLI_AUTH_INFO
+
+    if tool_name not in CLI_AUTH_INFO:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+
+    info = CLI_AUTH_INFO[tool_name]
+    login_cmd = info.get("login")
+
+    if not login_cmd:
+        return {"status": "no_login_required", "tool": tool_name}
+
+    try:
+        _sp.Popen(login_cmd.split(), stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        return {"status": "initiated", "tool": tool_name, "login_cmd": login_cmd}
+    except FileNotFoundError:
+        raise HTTPException(status_code=400, detail=f"Tool '{tool_name}' is not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/setup/install/{tool_name}")
 async def install_tool(tool_name: str) -> dict:
     """Attempt to install a CLI tool by name."""

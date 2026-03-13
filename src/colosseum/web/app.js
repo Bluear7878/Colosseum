@@ -170,6 +170,67 @@ var PROVIDER_GROUP_MAP = {
   "ollama":     { group: "ollama", name: "Ollama", icon: "\uD83E\uDD99", tier: "free", desc: "ollama run <model>" },
 };
 
+// Maps gladiator group id → CLI tool name (for auth API calls)
+var CLI_GROUP_TOOL_MAP = {
+  "claude": "claude",
+  "openai": "codex",
+  "gemini": "gemini",
+  "ollama": "ollama",
+};
+
+// CLI auth states fetched from /setup/status, keyed by group id
+var cliAuthStates = {};
+
+function fetchSetupStatus() {
+  return api("/setup/status").then(function(statuses) {
+    var states = {};
+    statuses.forEach(function(s) {
+      var groupId = s.tool === "codex" ? "openai" : s.tool;
+      states[groupId] = s;
+    });
+    cliAuthStates = states;
+    renderGladiatorGrid();
+  }).catch(function() {});
+}
+
+function isGladiatorAuthBlocked(g) {
+  var state = cliAuthStates[g.id];
+  if (!state) return false;
+  return state.installed && !state.auth_ok;
+}
+
+function triggerCLILogin(toolName, btn) {
+  btn.disabled = true;
+  btn.textContent = "Opening...";
+  api("/setup/auth/" + toolName, { method: "POST" })
+    .then(function(res) {
+      if (res.status === "no_login_required") {
+        toast("No login required for " + toolName + ".");
+        fetchSetupStatus();
+      } else {
+        toast("Browser login opened. Complete login, then click Refresh.");
+        btn.textContent = "Refresh";
+        btn.disabled = false;
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          btn.textContent = "Checking...";
+          btn.disabled = true;
+          fetchSetupStatus().then(function() {
+            btn.disabled = false;
+            btn.textContent = "Refresh";
+          });
+        };
+      }
+    })
+    .catch(function() {
+      var state = cliAuthStates[toolName === "codex" ? "openai" : toolName];
+      var loginCmd = state && state.login_cmd ? state.login_cmd : toolName + " login";
+      toast("Could not launch login. Run manually: " + loginCmd);
+      btn.textContent = "Login";
+      btn.disabled = false;
+    });
+}
+
 function fetchModels() {
   return api("/models").then(function(apiModels) {
     if (!apiModels || !apiModels.length) return;
@@ -566,9 +627,11 @@ function renderGladiatorGrid() {
 
 function createGladiatorCard(g) {
   var blocked = isGladiatorQuotaBlocked(g);
-  if (blocked && selectedGladiators[g.id]) delete selectedGladiators[g.id];
+  var authBlocked = isGladiatorAuthBlocked(g);
+  var isDisabled = blocked || authBlocked;
+  if (isDisabled && selectedGladiators[g.id]) delete selectedGladiators[g.id];
   var card = document.createElement("div");
-  card.className = "gladiator-card" + (selectedGladiators[g.id] ? " selected" : "") + (blocked ? " disabled-card" : "");
+  card.className = "gladiator-card" + (selectedGladiators[g.id] ? " selected" : "") + (isDisabled ? " disabled-card" : "") + (authBlocked ? " auth-blocked" : "");
   card.dataset.gid = g.id;
 
   var html = '<div class="gladiator-icon">' + g.icon + '</div>';
@@ -576,12 +639,14 @@ function createGladiatorCard(g) {
   if (g.desc) {
     html += '<div class="gladiator-desc">' + esc(g.desc) + '</div>';
   }
-  if (g.tier === "paid") {
+  if (authBlocked) {
+    html += '<div class="auth-chip">Not authenticated</div>';
+  } else if (g.tier === "paid") {
     html += '<div class="quota-chip' + (blocked ? ' exhausted' : '') + '">' + esc(quotaStatusText(g)) + '</div>';
   }
 
   // Variant select
-  html += '<select class="gladiator-select" data-gid="' + esc(g.id) + '"' + (blocked ? ' disabled' : '') + '>';
+  html += '<select class="gladiator-select" data-gid="' + esc(g.id) + '"' + (isDisabled ? ' disabled' : '') + '>';
   var currentIdx = gladiatorVariants[g.id] || 0;
   g.variants.forEach(function(v, i) {
     html += '<option value="' + i + '"' + (i === currentIdx ? ' selected' : '') + '>' + esc(v.label) + '</option>';
@@ -589,7 +654,7 @@ function createGladiatorCard(g) {
   html += '</select>';
 
   // Persona select
-  html += '<select class="persona-select" data-gid="' + esc(g.id) + '" title="Assign a debating persona"' + (blocked ? ' disabled' : '') + '>';
+  html += '<select class="persona-select" data-gid="' + esc(g.id) + '" title="Assign a debating persona"' + (isDisabled ? ' disabled' : '') + '>';
   html += '<option value="">-- Persona --</option>';
   var hasBuiltin = false;
   var hasCustom = false;
@@ -611,11 +676,33 @@ function createGladiatorCard(g) {
   html += '<option value="__custom__">+ Write Custom...</option>';
   html += '</select>';
 
+  if (authBlocked) {
+    var toolName = CLI_GROUP_TOOL_MAP[g.id];
+    if (toolName) {
+      html += '<button class="btn-cli-login" data-tool="' + esc(toolName) + '">Login</button>';
+    }
+  }
+
   card.innerHTML = html;
+
+  if (authBlocked) {
+    var loginBtn = card.querySelector(".btn-cli-login");
+    if (loginBtn) {
+      loginBtn.addEventListener("click", function(e) {
+        e.stopPropagation();
+        triggerCLILogin(loginBtn.dataset.tool, loginBtn);
+      });
+    }
+  }
 
   // Click card to toggle selection (not when clicking select)
   card.addEventListener("click", function(e) {
     if (e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
+    if (e.target.tagName === "BUTTON") return;
+    if (authBlocked) {
+      toast(g.name + " is not authenticated. Click Login to sign in.");
+      return;
+    }
     if (blocked) {
       toast(quotaStatusText(g));
       return;
@@ -832,6 +919,7 @@ selectedGladiators["gemini"] = true;
 renderGladiatorGrid();
 renderQuotaPanel();
 fetchQuotaStates();
+fetchSetupStatus();
 
 // Fetch dynamic models — poll every 5s until probed results arrive
 refreshGladiatorsFromAPI();

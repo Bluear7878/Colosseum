@@ -82,6 +82,19 @@ AI-synthesized final reports with key conclusions, verdict explanations, debate 
 
 ---
 
+## 🧭 Documentation Map
+
+The README is the product-facing overview. The canonical engineering docs now live in `docs/`.
+
+- Architecture overview: [`docs/architecture/overview.md`](docs/architecture/overview.md)
+- Design philosophy: [`docs/architecture/design-philosophy.md`](docs/architecture/design-philosophy.md)
+- Runtime protocol: [`docs/specs/runtime-protocol.md`](docs/specs/runtime-protocol.md)
+- Agent governance: [`docs/specs/agent-governance.md`](docs/specs/agent-governance.md)
+- Persona authoring: [`docs/specs/persona-authoring.md`](docs/specs/persona-authoring.md)
+- Spec index: [`docs/colosseum_spec.md`](docs/colosseum_spec.md)
+
+---
+
 ## 🚀 Quickstart
 
 ### Installation

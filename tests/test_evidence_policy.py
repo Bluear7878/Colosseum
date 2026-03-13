@@ -1,13 +1,21 @@
+import asyncio
+
 from colosseum.core.config import build_evidence_policy
 from colosseum.core.models import (
     AgentConfig,
+    AgentMessage,
+    DebateRound,
     ExperimentRun,
+    JudgeActionType,
+    JudgeDecision,
     JudgeConfig,
     JudgeMode,
     PlanDocument,
     ProviderConfig,
     ProviderType,
     RiskItem,
+    RoundSummary,
+    RoundType,
     TaskSpec,
     UsageMetrics,
 )
@@ -120,6 +128,146 @@ def test_automated_judge_does_not_early_finalize_when_evidence_is_thin(tmp_path)
 
     assert decision.action.value == "continue_debate"
     assert "Evidence grounding" in decision.reasoning
+
+
+def test_default_judge_policy_blocks_early_finalize_before_max_rounds(tmp_path):
+    judge = build_judge(tmp_path)
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Full debate", problem_statement="Pick a plan."),
+        agents=[],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED, minimum_confidence_to_stop=0.6),
+        plans=[
+            PlanDocument(
+                agent_id="a",
+                display_name="Plan A",
+                summary="Well-evidenced plan.",
+                evidence_basis=["E1", "E2", "E3", "E4"],
+                assumptions=["A1", "A2", "A3", "A4"],
+                architecture=["X1", "X2", "X3", "X4"],
+                implementation_strategy=["S1", "S2", "S3", "S4", "S5"],
+                risks=[RiskItem(title="R1", severity="medium", mitigation="M1")],
+                strengths=["T1", "T2", "T3"],
+                weaknesses=["W1"],
+            ),
+            PlanDocument(
+                agent_id="b",
+                display_name="Plan B",
+                summary="Clearly weaker plan.",
+                evidence_basis=["E1"],
+                assumptions=["A1"],
+                architecture=["X1"],
+                implementation_strategy=["S1"],
+                risks=[],
+                strengths=["T1"],
+                weaknesses=["W1"],
+            ),
+        ],
+    )
+    run.budget_policy.min_rounds = 0
+    run.budget_policy.max_rounds = 3
+
+    decision = asyncio.run(judge.decide(run))
+
+    assert decision.action.value == "continue_debate"
+    assert "Early finalization is disabled" in decision.reasoning
+
+
+def test_repetitive_rounds_still_continue_until_max_rounds(tmp_path):
+    judge = build_judge(tmp_path)
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Repetition test", problem_statement="Do not stop early."),
+        agents=[],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+        plans=[
+            PlanDocument(
+                agent_id="a",
+                display_name="Plan A",
+                summary="Plan A",
+                evidence_basis=["E1", "E2", "E3"],
+                strengths=["T1", "T2"],
+            ),
+            PlanDocument(
+                agent_id="b",
+                display_name="Plan B",
+                summary="Plan B",
+                evidence_basis=["E1", "E2", "E3"],
+                strengths=["T1", "T2"],
+            ),
+        ],
+        debate_rounds=[
+            DebateRound(
+                index=1,
+                round_type=RoundType.CRITIQUE,
+                purpose="Stress test",
+                summary=RoundSummary(agreements=["Same conclusion", "Same risk"]),
+                messages=[
+                    AgentMessage(
+                        round_index=1,
+                        round_type=RoundType.CRITIQUE,
+                        agent_id="a",
+                        plan_id="plan-a",
+                        content="Repeating prior points.",
+                        novelty_score=0.0,
+                    ),
+                    AgentMessage(
+                        round_index=1,
+                        round_type=RoundType.CRITIQUE,
+                        agent_id="b",
+                        plan_id="plan-b",
+                        content="Repeating prior points.",
+                        novelty_score=0.0,
+                    ),
+                ],
+            )
+        ],
+    )
+    run.budget_policy.min_rounds = 1
+    run.budget_policy.max_rounds = 3
+
+    decision = asyncio.run(judge.decide(run))
+
+    assert decision.action in {
+        JudgeActionType.CONTINUE_DEBATE,
+        JudgeActionType.REQUEST_REVISION,
+    }
+    assert "Early finalization is disabled" in decision.reasoning
+
+
+def test_ai_judge_finalize_is_deferred_until_last_round(tmp_path, monkeypatch):
+    judge = build_judge(tmp_path)
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="AI judge defer", problem_statement="Do not end early."),
+        agents=[],
+        judge=JudgeConfig(
+            mode=JudgeMode.AI,
+            provider=ProviderConfig(type=ProviderType.MOCK, model="mock-judge"),
+        ),
+        plans=[
+            PlanDocument(agent_id="a", display_name="Plan A", summary="Plan A"),
+            PlanDocument(agent_id="b", display_name="Plan B", summary="Plan B"),
+        ],
+    )
+    run.budget_policy.max_rounds = 2
+
+    async def fake_ai_decide(_run):
+        return JudgeDecision(
+            mode=JudgeMode.AI,
+            action=JudgeActionType.FINALIZE,
+            reasoning="The judge would normally stop here.",
+            confidence=0.9,
+            disagreement_level=0.2,
+            expected_value_of_next_round=0.0,
+        )
+
+    monkeypatch.setattr(judge, "_ai_decide", fake_ai_decide)
+
+    decision = asyncio.run(judge.decide(run))
+
+    assert decision.action.value == "continue_debate"
+    assert "Early finalization is disabled" in decision.reasoning
 
 
 def test_build_evidence_policy_changes_with_search_toggle():

@@ -72,8 +72,10 @@ class JudgeService:
 
     async def decide(self, run: ExperimentRun) -> JudgeDecision:
         if run.judge.mode == JudgeMode.AI and run.judge.provider:
-            return await self._ai_decide(run)
-        return self._automated_decide(run)
+            decision = await self._ai_decide(run)
+        else:
+            decision = self._automated_decide(run)
+        return self._enforce_full_debate(run, decision)
 
     async def finalize(
         self, run: ExperimentRun, decision: JudgeDecision | None = None
@@ -347,6 +349,15 @@ class JudgeService:
             "architectural specifics) without citing a source from the context — these are likely hallucinated. "
             "Lower that agent's credibility and note the concern in your reasoning."
         )
+        if (
+            not run.judge.allow_early_finalization
+            and len(run.debate_rounds) < run.budget_policy.max_rounds
+        ):
+            judge_instructions += (
+                " Early finalization is disabled for this run. Unless the configured maximum "
+                "number of debate rounds has already been reached, you must continue_debate "
+                "or request_revision rather than finalize."
+            )
         if run.response_language and run.response_language != "auto":
             judge_instructions += (
                 f" MANDATORY: Write ALL content — reasoning, focus_areas, agenda fields — in {run.response_language}. "
@@ -395,6 +406,42 @@ class JudgeService:
             budget_pressure=self.budget_manager.budget_pressure(
                 run.budget_policy, run.budget_ledger
             ),
+            agenda=agenda,
+        )
+
+    def _enforce_full_debate(self, run: ExperimentRun, decision: JudgeDecision) -> JudgeDecision:
+        """Prevent non-user runs from finalizing before the configured round budget is used."""
+        if (
+            run.judge.allow_early_finalization
+            or run.judge.mode == JudgeMode.HUMAN
+            or decision.action != JudgeActionType.FINALIZE
+        ):
+            return decision
+
+        remaining_rounds = run.budget_policy.max_rounds - len(run.debate_rounds)
+        if remaining_rounds <= 0:
+            return decision
+
+        next_round_type = decision.next_round_type or self._next_round_type(run)
+        agenda = decision.agenda or self._select_agenda(run, next_round_type)
+        action = (
+            JudgeActionType.REQUEST_REVISION
+            if next_round_type == RoundType.TARGETED_REVISION
+            else JudgeActionType.CONTINUE_DEBATE
+        )
+        return JudgeDecision(
+            mode=decision.mode,
+            action=action,
+            reasoning=(
+                "Early finalization is disabled for this run. Continue debating until the "
+                f"configured round budget is exhausted. Original finalize rationale: {decision.reasoning}"
+            ),
+            confidence=min(decision.confidence, 0.76),
+            disagreement_level=max(decision.disagreement_level, self._disagreement_level(run)),
+            expected_value_of_next_round=max(decision.expected_value_of_next_round, 0.2),
+            next_round_type=next_round_type,
+            focus_areas=decision.focus_areas or agenda.focus_areas or self._focus_areas(run),
+            budget_pressure=decision.budget_pressure,
             agenda=agenda,
         )
 

@@ -91,6 +91,19 @@ def test_automated_run_completes(tmp_path):
     assert run.verdict is not None
 
 
+def test_automated_run_uses_configured_round_budget_before_finalizing(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    request = build_request(JudgeMode.AUTOMATED)
+    request.budget_policy.max_rounds = 2
+    request.budget_policy.min_rounds = 0
+
+    run = asyncio.run(orchestrator.create_run(request))
+
+    assert run.status.value == "completed"
+    assert len(run.debate_rounds) == 2
+    assert run.verdict is not None
+
+
 def test_human_run_pauses(tmp_path):
     orchestrator = build_orchestrator(tmp_path)
     run = asyncio.run(orchestrator.create_run(build_request(JudgeMode.HUMAN)))

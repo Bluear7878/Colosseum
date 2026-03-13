@@ -130,6 +130,77 @@ def test_automated_judge_does_not_early_finalize_when_evidence_is_thin(tmp_path)
     assert "Evidence grounding" in decision.reasoning
 
 
+def test_automated_judge_can_finalize_when_evidence_gating_is_disabled(tmp_path):
+    judge = build_judge(tmp_path)
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Evidence toggle", problem_statement="Pick the strongest plan."),
+        agents=[],
+        judge=JudgeConfig(
+            mode=JudgeMode.AUTOMATED,
+            minimum_confidence_to_stop=0.6,
+            allow_early_finalization=True,
+            use_evidence_based_judging=False,
+        ),
+        plans=[
+            PlanDocument(
+                agent_id="a",
+                display_name="Plan A",
+                summary="Strong structure with sparse citations.",
+                assumptions=["A1", "A2", "A3", "A4"],
+                architecture=["X1", "X2", "X3", "X4"],
+                implementation_strategy=["S1", "S2", "S3", "S4", "S5"],
+                risks=[
+                    RiskItem(title="R1", severity="medium", mitigation="M1"),
+                    RiskItem(title="R2", severity="medium", mitigation="M2"),
+                    RiskItem(title="R3", severity="medium", mitigation="M3"),
+                ],
+                strengths=["T1", "T2", "T3"],
+                weaknesses=["W1", "W2"],
+            ),
+            PlanDocument(
+                agent_id="b",
+                display_name="Plan B",
+                summary="Weaker plan.",
+                assumptions=["A1"],
+                architecture=["X1"],
+                implementation_strategy=["S1"],
+                risks=[],
+                strengths=["T1"],
+                weaknesses=["W1"],
+            ),
+        ],
+    )
+    run.budget_policy.min_rounds = 0
+
+    decision = asyncio.run(judge.decide(run))
+
+    assert decision.action == JudgeActionType.FINALIZE
+    assert "sufficiently differentiated" in decision.reasoning
+
+
+def test_plan_evaluation_neutralizes_evidence_score_when_disabled(tmp_path):
+    judge = build_judge(tmp_path)
+    plans = [
+        PlanDocument(
+            agent_id="a",
+            display_name="Plan A",
+            summary="Sparse evidence plan",
+            assumptions=["A1", "A2"],
+            architecture=["X1", "X2"],
+            implementation_strategy=["S1", "S2"],
+            risks=[RiskItem(title="R1", severity="medium", mitigation="M1")],
+            strengths=["T1"],
+            weaknesses=["W1"],
+        )
+    ]
+
+    evaluations = judge.evaluate_plans(plans, use_evidence_based_judging=False)
+
+    assert evaluations[0].scores["evidence_grounding"] == 0.5
+    assert "without evidence-grounding as a gating condition" in evaluations[0].notes[0]
+
+
 def test_default_judge_policy_blocks_early_finalize_before_max_rounds(tmp_path):
     judge = build_judge(tmp_path)
     run = ExperimentRun(
@@ -303,3 +374,66 @@ def test_plan_prompt_reflects_search_preference(tmp_path):
         run, agent, "Frozen context", image_summary="", has_image_inputs=False
     )
     assert "Do not fill evidence gaps from memory" in disabled_prompt
+
+
+def test_plan_prompt_reinforces_persona_voice(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    agent = AgentConfig(
+        agent_id="agent-a",
+        display_name="Agent A",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-a"),
+        persona_content="Use short, severe sentences. Attack weak reasoning immediately.",
+    )
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Persona prompt", problem_statement="Test persona voice guidance."),
+        agents=[agent],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+    )
+
+    prompt = orchestrator._build_plan_prompt(
+        run, agent, "Frozen context", image_summary="", has_image_inputs=False
+    )
+
+    assert "VOICE CONTRACT" in prompt
+    assert "PERSONA EXPRESSION" in prompt
+    assert "sound like the assigned persona" in prompt
+
+
+def test_debate_prompt_reinforces_persona_voice(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    agent_a = AgentConfig(
+        agent_id="agent-a",
+        display_name="Agent A",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-a"),
+        persona_content="Speak like a relentless reviewer with sharp, clipped rebuttals.",
+    )
+    agent_b = AgentConfig(
+        agent_id="agent-b",
+        display_name="Agent B",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-b"),
+    )
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Persona debate", problem_statement="Debate the better plan."),
+        agents=[agent_a, agent_b],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+        plans=[
+            PlanDocument(agent_id="agent-a", display_name="Plan A", summary="Plan A"),
+            PlanDocument(agent_id="agent-b", display_name="Plan B", summary="Plan B"),
+        ],
+    )
+
+    prompt = orchestrator.debate_engine._build_prompt(
+        run,
+        agent_a,
+        RoundType.CRITIQUE,
+        agenda=None,
+        instructions=None,
+        image_summary="",
+        has_image_inputs=False,
+    )
+
+    assert "VOICE CONTRACT" in prompt
+    assert "PERSONA EXPRESSION" in prompt
+    assert "critique points, defense points, and concessions" in prompt

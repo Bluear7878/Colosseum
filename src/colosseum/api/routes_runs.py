@@ -147,7 +147,10 @@ async def _event_stream(request: RunCreateRequest, orchestrator):
                     }
                 )
 
-        run.plan_evaluations = orchestrator.judge_service.evaluate_plans(run.plans)
+        run.plan_evaluations = orchestrator.judge_service.evaluate_plans(
+            run.plans,
+            use_evidence_based_judging=run.judge.use_evidence_based_judging,
+        )
         yield encode_sse(
             {
                 "phase": "plans_ready",

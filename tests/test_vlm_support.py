@@ -162,3 +162,23 @@ def test_cli_wrapper_prompt_mentions_search_policy_when_present():
 
     assert "Search policy:" in prompt
     assert "Internet search is encouraged" in prompt
+
+
+def test_cli_wrapper_persona_prompt_enforces_voice_without_relaxing_guardrails():
+    prompt = build_prompt(
+        {
+            "operation": "debate",
+            "instructions": "Respond to the other plan.",
+            "metadata": {
+                "persona": "Speak with clipped, ruthless confidence, but stay evidence-first.",
+            },
+        }
+    )
+
+    assert "VOICE CONTRACT" in prompt
+    assert "diction, cadence, level of directness" in prompt
+    assert (
+        "JSON validity, evidence quality, and required schema always take priority over style"
+        in prompt
+    )
+    assert "critique_points[*].text" in prompt

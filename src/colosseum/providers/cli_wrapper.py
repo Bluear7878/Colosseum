@@ -14,6 +14,11 @@ import os
 import subprocess
 import sys
 
+from colosseum.personas.prompting import (
+    PERSONA_STYLE_GUARDRAIL,
+    PERSONA_VOICE_CONTRACT,
+)
+
 
 def read_input() -> dict:
     input_path = os.environ.get("COLOSSEUM_INPUT_PATH")
@@ -39,8 +44,10 @@ def build_prompt(data: dict) -> str:
 
     persona = metadata.get("persona")
     persona_preamble = ""
+    persona_voice_preamble = ""
     if persona:
         persona_preamble = f"=== YOUR PERSONA ===\n{persona}\n=== END PERSONA ===\n\n"
+        persona_voice_preamble = f"{PERSONA_VOICE_CONTRACT}\n{PERSONA_STYLE_GUARDRAIL}\n\n"
 
     image_note = build_image_note(metadata)
     image_preamble = f"{image_note}\n\n" if image_note else ""
@@ -64,7 +71,10 @@ def build_prompt(data: dict) -> str:
     else:
         lang_rule = ""
 
-    prompt = f"{lang_rule}{persona_preamble}{task_preamble}{image_preamble}{search_preamble}Operation: {operation}\n\n{instructions}\n\n"
+    prompt = (
+        f"{lang_rule}{persona_preamble}{persona_voice_preamble}{task_preamble}{image_preamble}"
+        f"{search_preamble}Operation: {operation}\n\n{instructions}\n\n"
+    )
     prompt += "Respond with valid JSON containing these fields:\n"
 
     if operation == "plan":
@@ -75,6 +85,11 @@ def build_prompt(data: dict) -> str:
         prompt += "trade_offs (list), open_questions (list)"
         prompt += "\n\nIMPORTANT: Every field must be strictly relevant to the debate topic above. "
         prompt += "Do not include generic content or examples unrelated to this specific task."
+        if persona:
+            prompt += (
+                " Let the summary, assumptions, trade-offs, and open questions sound like the persona, "
+                "while keeping claims precise and evidence-backed."
+            )
     elif operation == "debate":
         prompt += "content, critique_points (list of {category, text, target_plan_ids, evidence}), "
         prompt += "defense_points (list of {category, text, target_plan_ids, evidence}), "
@@ -87,6 +102,11 @@ def build_prompt(data: dict) -> str:
         prompt += "Rebut what you disagree with, concede well-supported points. "
         prompt += "Evidence quality matters more than rhetoric: cite the frozen context or state uncertainty. "
         prompt += "Do not introduce off-topic content or generic advice unrelated to this task."
+        if persona:
+            prompt += (
+                " Make the diction and argumentative rhythm in content, critique_points[*].text, "
+                "defense_points[*].text, and concessions sound recognizably like the persona."
+            )
     elif operation == "judge":
         prompt += "action (continue_debate|finalize|request_revision), confidence (float), "
         prompt += "reasoning, disagreement_level (float), expected_value_of_next_round (float), "

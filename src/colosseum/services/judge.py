@@ -41,14 +41,20 @@ class JudgeService:
         self.budget_manager = budget_manager
         self.provider_runtime = provider_runtime
 
-    def evaluate_plans(self, plans: list[PlanDocument]) -> list[PlanEvaluation]:
+    def evaluate_plans(
+        self,
+        plans: list[PlanDocument],
+        use_evidence_based_judging: bool = True,
+    ) -> list[PlanEvaluation]:
         if not plans:
             return []
         evaluations: list[PlanEvaluation] = []
         for plan in plans:
             scores = {
                 "assumption_clarity": min(1.0, len(plan.assumptions) / 4),
-                "evidence_grounding": min(1.0, len(plan.evidence_basis) / 4),
+                "evidence_grounding": (
+                    min(1.0, len(plan.evidence_basis) / 4) if use_evidence_based_judging else 0.5
+                ),
                 "architecture_specificity": min(1.0, len(plan.architecture) / 4),
                 "implementation_feasibility": min(1.0, len(plan.implementation_strategy) / 5),
                 "risk_coverage": min(1.0, len(plan.risks) / 3),
@@ -61,7 +67,11 @@ class JudgeService:
                     plan_id=plan.plan_id,
                     scores=scores,
                     notes=[
-                        f"{plan.display_name} plan cites {len(plan.evidence_basis)} explicit evidence item(s).",
+                        (
+                            f"{plan.display_name} plan cites {len(plan.evidence_basis)} explicit evidence item(s)."
+                            if use_evidence_based_judging
+                            else f"{plan.display_name} plan was scored without evidence-grounding as a gating condition."
+                        ),
                         f"{plan.display_name} plan covers {len(plan.risks)} explicit risk items.",
                         f"{plan.display_name} plan lists {len(plan.implementation_strategy)} implementation steps.",
                     ],
@@ -87,7 +97,10 @@ class JudgeService:
         return self._automated_finalize(run, decision)
 
     def build_human_packet(self, run: ExperimentRun) -> HumanJudgePacket:
-        evaluations = run.plan_evaluations or self.evaluate_plans(run.plans)
+        evaluations = run.plan_evaluations or self.evaluate_plans(
+            run.plans,
+            use_evidence_based_judging=run.judge.use_evidence_based_judging,
+        )
         score_by_plan = {item.plan_id: item.overall_score for item in evaluations}
         suggested_agenda = self._select_agenda(run, self._next_round_type(run))
         cards = [
@@ -197,14 +210,22 @@ class JudgeService:
             judge_note = (
                 "Move to the next issue because the adopted arguments were more evidence-backed "
                 "or more concrete than the alternatives."
+                if run.judge.use_evidence_based_judging
+                else "Move to the next issue because the adopted arguments were more concrete or decision-useful than the alternatives."
             )
             moved_to_next_issue = True
         else:
             resolution = (
                 "No argument clearly cleared the evidence bar for this issue, so the judge should "
                 "keep the scope narrow if another round is requested."
+                if run.judge.use_evidence_based_judging
+                else "No argument clearly separated itself on this issue, so the judge should keep the scope narrow if another round is requested."
             )
-            judge_note = "The round surfaced disagreement, but not enough objective support to endorse a single stance."
+            judge_note = (
+                "The round surfaced disagreement, but not enough objective support to endorse a single stance."
+                if run.judge.use_evidence_based_judging
+                else "The round surfaced disagreement, but not enough separation to endorse a single stance."
+            )
             moved_to_next_issue = False
 
         return RoundAdjudication(
@@ -219,7 +240,10 @@ class JudgeService:
         )
 
     def _automated_decide(self, run: ExperimentRun) -> JudgeDecision:
-        evaluations = run.plan_evaluations or self.evaluate_plans(run.plans)
+        evaluations = run.plan_evaluations or self.evaluate_plans(
+            run.plans,
+            use_evidence_based_judging=run.judge.use_evidence_based_judging,
+        )
         if not run.plan_evaluations:
             run.plan_evaluations = evaluations
 
@@ -235,7 +259,10 @@ class JudgeService:
             len(run.debate_rounds) == 0
             and run.budget_policy.min_rounds <= 0
             and confidence >= run.judge.minimum_confidence_to_stop
-            and evidence_support >= MIN_EVIDENCE_SUPPORT_TO_FINALIZE
+            and (
+                not run.judge.use_evidence_based_judging
+                or evidence_support >= MIN_EVIDENCE_SUPPORT_TO_FINALIZE
+            )
         ):
             return JudgeDecision(
                 mode=JudgeMode.AUTOMATED,
@@ -248,7 +275,8 @@ class JudgeService:
             )
 
         if (
-            remaining_rounds > 0
+            run.judge.use_evidence_based_judging
+            and remaining_rounds > 0
             and evidence_support < LOW_EVIDENCE_SUPPORT_THRESHOLD
             and budget_pressure < 0.9
         ):
@@ -349,6 +377,12 @@ class JudgeService:
             "architectural specifics) without citing a source from the context — these are likely hallucinated. "
             "Lower that agent's credibility and note the concern in your reasoning."
         )
+        if not run.judge.use_evidence_based_judging:
+            judge_instructions += (
+                " Evidence quality is still useful context, but it is NOT a gating condition for this run. "
+                "Do not continue or finalize solely because explicit evidence is sparse. "
+                "Weigh coherence, feasibility, responsiveness, and the overall substance of the debate as first-class factors."
+            )
         if (
             not run.judge.allow_early_finalization
             and len(run.debate_rounds) < run.budget_policy.max_rounds
@@ -382,6 +416,7 @@ class JudgeService:
                 "encourage_internet_search": run.encourage_internet_search,
                 "search_policy": build_evidence_policy(run.encourage_internet_search),
                 "evidence_support": self._evidence_support(run),
+                "use_evidence_based_judging": run.judge.use_evidence_based_judging,
                 "suggested_agenda": suggested_agenda.model_dump(mode="json"),
             },
         )
@@ -452,7 +487,10 @@ class JudgeService:
     ) -> JudgeVerdict:
         if not run.plans:
             raise ValueError("Cannot finalize a run without any plans.")
-        evaluations = run.plan_evaluations or self.evaluate_plans(run.plans)
+        evaluations = run.plan_evaluations or self.evaluate_plans(
+            run.plans,
+            use_evidence_based_judging=run.judge.use_evidence_based_judging,
+        )
         sorted_plans = sorted(
             run.plans,
             key=lambda plan: next(
@@ -492,6 +530,8 @@ class JudgeService:
             )
         rationale = (
             f"{top_plan.display_name} produced the strongest evidence-backed plan for this task."
+            if run.judge.use_evidence_based_judging
+            else f"{top_plan.display_name} produced the strongest overall plan for this task."
         )
         return JudgeVerdict(
             judge_mode=run.judge.mode,
@@ -528,8 +568,14 @@ class JudgeService:
             f"Problem: {run.task.problem_statement}. "
             f"Success criteria: {run.task.success_criteria}. "
             f"\n\nParticipating plans:\n{plan_summaries}\n\n"
-            "Select EXACTLY ONE winning plan — the one with the strongest evidence-backed arguments "
-            "for this specific task. There must always be a single winner. "
+            + (
+                "Select EXACTLY ONE winning plan — the one with the strongest evidence-backed arguments "
+                "for this specific task. "
+                if run.judge.use_evidence_based_judging
+                else "Select EXACTLY ONE winning plan — the one with the strongest overall case "
+                "for this specific task. "
+            )
+            + "There must always be a single winner. "
             "Return JSON with: winning_plan_id (str, the plan_id of the winner), "
             "rationale (str, 2-3 sentences on why this plan wins), "
             "selected_strengths (list[str], top 3-4 strengths of the winner), "
@@ -691,7 +737,10 @@ class JudgeService:
         return RoundType(ROUND_SEQUENCE[current_rounds])
 
     def _focus_areas(self, run: ExperimentRun) -> list[str]:
-        if self._evidence_support(run) < MIN_EVIDENCE_SUPPORT_TO_FINALIZE:
+        if (
+            run.judge.use_evidence_based_judging
+            and self._evidence_support(run) < MIN_EVIDENCE_SUPPORT_TO_FINALIZE
+        ):
             return ["objective evidence", "source-backed assumptions", "explicit uncertainty"]
         if not run.debate_rounds:
             return ["feasibility", "maintainability", "cost", "risk"]
@@ -715,7 +764,10 @@ class JudgeService:
         return [strength for plan in run.plans for strength in plan.strengths[:1]]
 
     def _recommended_human_action(self, run: ExperimentRun) -> str:
-        if self._evidence_support(run) < LOW_EVIDENCE_SUPPORT_THRESHOLD:
+        if (
+            run.judge.use_evidence_based_judging
+            and self._evidence_support(run) < LOW_EVIDENCE_SUPPORT_THRESHOLD
+        ):
             return "Evidence is still thin. Request another bounded round focused on source-backed claims before picking a winner."
         if not run.debate_rounds:
             return "Review plan cards and either pick a winner or request a critique round."
@@ -785,7 +837,10 @@ class JudgeService:
         candidates: list[DebateAgenda] = []
         focus_areas = self._focus_areas(run)
 
-        if self._evidence_support(run) < LOW_EVIDENCE_SUPPORT_THRESHOLD:
+        if (
+            run.judge.use_evidence_based_judging
+            and self._evidence_support(run) < LOW_EVIDENCE_SUPPORT_THRESHOLD
+        ):
             candidates.append(
                 DebateAgenda(
                     title="Evidence Grounding",
@@ -887,7 +942,10 @@ class JudgeService:
         for message in debate_round.messages:
             display_name = agent_names.get(message.agent_id, message.agent_id)
             for claim in message.critique_points:
-                score = 0.55 + (0.15 if claim.evidence else 0.0) + (message.novelty_score * 0.2)
+                evidence_bonus = (
+                    0.15 if run.judge.use_evidence_based_judging and claim.evidence else 0.0
+                )
+                score = 0.55 + evidence_bonus + (message.novelty_score * 0.2)
                 candidates.append(
                     (
                         score,
@@ -904,7 +962,10 @@ class JudgeService:
                     )
                 )
             for claim in message.defense_points:
-                score = 0.58 + (0.18 if claim.evidence else 0.0) + (message.novelty_score * 0.18)
+                evidence_bonus = (
+                    0.18 if run.judge.use_evidence_based_judging and claim.evidence else 0.0
+                )
+                score = 0.58 + evidence_bonus + (message.novelty_score * 0.18)
                 candidates.append(
                     (
                         score,

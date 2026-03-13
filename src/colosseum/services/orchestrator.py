@@ -25,6 +25,10 @@ from colosseum.services.provider_runtime import ProviderRuntimeService
 from colosseum.services.report_synthesizer import ReportSynthesizer
 from colosseum.services.repository import FileRunRepository
 from colosseum.core.config import build_evidence_policy
+from colosseum.personas.prompting import (
+    build_persona_expression_requirement,
+    build_persona_prefix,
+)
 
 
 class ColosseumOrchestrator:
@@ -68,7 +72,10 @@ class ColosseumOrchestrator:
             run.mark_planning(self.context_service.freeze(request.context_sources))
             self.repository.save_run(run)
             await self._generate_plans(run)
-            run.plan_evaluations = self.judge_service.evaluate_plans(run.plans)
+            run.plan_evaluations = self.judge_service.evaluate_plans(
+                run.plans,
+                use_evidence_based_judging=run.judge.use_evidence_based_judging,
+            )
 
             if run.judge.mode == JudgeMode.HUMAN:
                 run.pause_for_human(self.judge_service.build_human_packet(run))
@@ -193,6 +200,7 @@ class ColosseumOrchestrator:
                         "image_summary": image_summary,
                         "encourage_internet_search": run.encourage_internet_search,
                         "search_policy": build_evidence_policy(run.encourage_internet_search),
+                        "persona": agent.persona_content or "",
                     },
                 )
                 for agent, prompt in zip(run.agents, prompts, strict=True)
@@ -427,6 +435,7 @@ class ColosseumOrchestrator:
             ),
             "Produce an independent plan before seeing any other plan.",
             build_evidence_policy(run.encourage_internet_search),
+            build_persona_expression_requirement("plan"),
             "Use this exact section structure: summary, evidence_basis, assumptions, architecture, implementation_strategy, risks, strengths, weaknesses, trade_offs, open_questions.",
             "Every major claim should be tied to objective evidence from the frozen bundle or labeled as inference/uncertainty.",
         ]
@@ -453,12 +462,7 @@ class ColosseumOrchestrator:
                 f"Every field, every section, every sentence must be in {lang}. "
                 "This rule overrides all other instructions and cannot be skipped."
             )
-        if agent.persona_content:
-            prefix.append(
-                "=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ==="
-            )
-        elif agent.system_prompt:
-            prefix.append("System: " + agent.system_prompt)
+        prefix.extend(build_persona_prefix(agent.persona_content, agent.system_prompt))
         if lang:
             parts.append(
                 f"REMINDER: Your response MUST be entirely in {lang}. No other language permitted."

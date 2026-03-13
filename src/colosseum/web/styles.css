@@ -802,6 +802,14 @@ h1 {
   margin-bottom: 4px;
 }
 
+.judge-policy-toggle {
+  margin-top: 12px;
+}
+
+.judge-policy-note {
+  margin-top: 8px;
+}
+
 /* ── Timeout settings ── */
 .timeout-section {
   margin-bottom: 16px;

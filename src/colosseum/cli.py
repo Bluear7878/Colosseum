@@ -1156,6 +1156,7 @@ def cmd_debate(args: argparse.Namespace) -> None:
     persona_specs = args.personas or []
     json_output = args.json_output
     use_monitor = getattr(args, "monitor", False)
+    use_evidence_based_judging = not getattr(args, "disable_evidence_judging", False)
 
     # --mock flag overrides -g
     if args.mock:
@@ -1216,6 +1217,12 @@ def cmd_debate(args: argparse.Namespace) -> None:
         print(
             f"  {BOLD}Depth:{RST} {depth} ({depth_label})  {DIM}max {depth} rounds, {token_budget} token budget{RST}"
         )
+        evidence_policy_label = (
+            "Evidence-gated judging"
+            if use_evidence_based_judging
+            else "Evidence shown, but not used as a hard judging gate"
+        )
+        print(f"  {BOLD}Judge Policy:{RST} {evidence_policy_label}")
         print(f"  {BOLD}Gladiators:{RST}")
         for a in agents:
             persona_tag = f" [{a.get('persona_id', '')}]" if a.get("persona_id") else ""
@@ -1254,6 +1261,7 @@ def cmd_debate(args: argparse.Namespace) -> None:
         judge=JudgeConfig(
             mode=JudgeMode.AUTOMATED,
             minimum_confidence_to_stop=profile["minimum_confidence_to_stop"],
+            use_evidence_based_judging=use_evidence_based_judging,
         ),
         budget_policy=BudgetPolicy(
             max_rounds=depth,
@@ -1403,7 +1411,10 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
                 elif event_type == "plan_ready":
                     _agent_plan(event_data)
 
-        run.plan_evaluations = orch.judge_service.evaluate_plans(run.plans)
+        run.plan_evaluations = orch.judge_service.evaluate_plans(
+            run.plans,
+            use_evidence_based_judging=run.judge.use_evidence_based_judging,
+        )
 
         # Emit plan scores
         scores = {}
@@ -1878,6 +1889,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Open a live monitor in a tmux side pane (requires tmux)",
+    )
+    p_debate.add_argument(
+        "--disable-evidence-judging",
+        action="store_true",
+        default=False,
+        help="Keep surfacing evidence, but do not let thin evidence force more rounds or gate the verdict.",
     )
 
     # monitor

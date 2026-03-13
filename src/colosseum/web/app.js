@@ -101,6 +101,7 @@ var MAX_IMAGE_FILE_BYTES = 4 * 1024 * 1024;
 var currentRunId = null;
 var currentMode = "live"; // "live" or "result"
 var encourageInternetSearch = loadBooleanSetting("colosseum:encourage_search", true);
+var useEvidenceBasedJudging = loadBooleanSetting("colosseum:evidence_judging", true);
 var currentJudgeMode = "automated"; // "automated", "ai", or "human"
 var judgeModelIndex = {};
 
@@ -1149,6 +1150,8 @@ var judgeHuman = document.getElementById("judge-human");
 var judgeModelWrap = document.getElementById("judge-model-wrap");
 var judgeModelSelect = document.getElementById("judge-model");
 var judgeNote = document.getElementById("judge-note");
+var evidenceJudgingToggle = document.getElementById("evidence-judging-toggle");
+var evidenceJudgingNote = document.getElementById("evidence-judging-note");
 var searchToggle = document.getElementById("encourage-search-toggle");
 var searchNote = document.getElementById("search-note");
 
@@ -1192,6 +1195,16 @@ function updateJudgeControls() {
   judgeNote.textContent = option.label + " will review each round, set the next agenda, and deliver the final verdict.";
 }
 
+function updateEvidenceJudgingUI() {
+  if (evidenceJudgingToggle) evidenceJudgingToggle.checked = !!useEvidenceBasedJudging;
+  if (!evidenceJudgingNote) return;
+  if (useEvidenceBasedJudging) {
+    evidenceJudgingNote.textContent = "When enabled, thin evidence can force another round and evidence grounding weighs more heavily in scoring and finalization.";
+    return;
+  }
+  evidenceJudgingNote.textContent = "When disabled, evidence is still shown to the judge, but it no longer acts as a hard gate for continuing or finalizing the debate.";
+}
+
 judgeAuto.addEventListener("click", function() {
   currentJudgeMode = "automated";
   updateJudgeControls();
@@ -1213,7 +1226,16 @@ if (judgeModelSelect) {
 
 renderJudgeModelOptions();
 updateJudgeControls();
+updateEvidenceJudgingUI();
 updateSearchPreferenceUI();
+
+if (evidenceJudgingToggle) {
+  evidenceJudgingToggle.addEventListener("change", function() {
+    useEvidenceBasedJudging = !!evidenceJudgingToggle.checked;
+    saveBooleanSetting("colosseum:evidence_judging", useEvidenceBasedJudging);
+    updateEvidenceJudgingUI();
+  });
+}
 
 function updateSearchPreferenceUI() {
   if (searchToggle) searchToggle.checked = !!encourageInternetSearch;
@@ -2039,7 +2061,8 @@ function buildPayload() {
       mode: currentJudgeMode,
       provider: judgeProvider || undefined,
       minimum_confidence_to_stop: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).confidence,
-      prefer_merged_plan_on_close_scores: true
+      prefer_merged_plan_on_close_scores: true,
+      use_evidence_based_judging: useEvidenceBasedJudging
     },
     paid_provider_policy: buildPaidProviderPolicy(),
     budget_policy: (function() {

@@ -25,6 +25,10 @@ from colosseum.services.budget import BudgetManager
 from colosseum.services.context_media import extract_image_inputs, summarize_image_inputs
 from colosseum.services.normalizers import ResponseNormalizer
 from colosseum.services.provider_runtime import ProviderRuntimeService
+from colosseum.personas.prompting import (
+    build_persona_expression_requirement,
+    build_persona_prefix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,7 @@ class DebateEngine:
                         "image_summary": image_summary,
                         "encourage_internet_search": run.encourage_internet_search,
                         "search_policy": build_evidence_policy(run.encourage_internet_search),
+                        "persona": agent.persona_content or "",
                     },
                 )
             )
@@ -488,6 +493,9 @@ class DebateEngine:
                 "Do NOT simply restate your own position — engage with what others have said. "
                 "Evidence quality matters more than rhetorical force: cite the frozen bundle or state uncertainty explicitly. "
                 "Unsupported claims reduce judge confidence.",
+                build_persona_expression_requirement(
+                    "debate response, including content, critique points, defense points, and concessions"
+                ),
             ]
         )
         if has_image_inputs:
@@ -514,12 +522,7 @@ class DebateEngine:
                 f"Every field, every argument, every sentence must be in {lang}. "
                 "This rule overrides all other instructions and cannot be skipped."
             )
-        if agent.persona_content:
-            prefix.append(
-                "=== YOUR PERSONA ===\n" + agent.persona_content + "\n=== END PERSONA ==="
-            )
-        elif agent.system_prompt:
-            prefix.append("System: " + agent.system_prompt)
+        prefix.extend(build_persona_prefix(agent.persona_content, agent.system_prompt))
         if lang:
             prompt_parts.append(
                 f"REMINDER: Your response MUST be entirely in {lang}. No other language permitted."

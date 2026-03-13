@@ -459,6 +459,7 @@ class JudgeConfig(BaseModel):
     minimum_confidence_to_stop: float = 0.78
     prefer_merged_plan_on_close_scores: bool = True
     allow_early_finalization: bool = False
+    use_evidence_based_judging: bool = True
 
 
 class JudgeDecision(BaseModel):

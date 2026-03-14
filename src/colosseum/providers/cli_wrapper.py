@@ -15,8 +15,8 @@ import subprocess
 import sys
 
 from colosseum.personas.prompting import (
-    PERSONA_STYLE_GUARDRAIL,
-    PERSONA_VOICE_CONTRACT,
+    build_persona_expression_requirement,
+    build_persona_prefix,
 )
 from colosseum.providers.cli_adapters import build_cli_adapter
 from colosseum.services.prompt_contracts import (
@@ -53,39 +53,32 @@ def build_prompt(data: dict) -> str:
     metadata = data.get("metadata", {})
 
     persona = metadata.get("persona")
-    persona_preamble = ""
-    persona_voice_preamble = ""
-    if persona:
-        persona_preamble = f"=== YOUR PERSONA ===\n{persona}\n=== END PERSONA ===\n\n"
-        persona_voice_preamble = f"{PERSONA_VOICE_CONTRACT}\n{PERSONA_STYLE_GUARDRAIL}\n\n"
-
     image_note = build_image_note(metadata)
-    image_preamble = f"{image_note}\n\n" if image_note else ""
-
     search_policy = metadata.get("search_policy") if operation != "judge" else None
-    search_preamble = f"Search policy: {search_policy}\n\n" if search_policy else ""
-
     # Surface task title prominently so the model cannot ignore the topic
     task_title = metadata.get("task_title", "")
-    task_preamble = (
-        f"=== DEBATE TOPIC ===\n{task_title}\n=== END TOPIC ===\n\n" if task_title else ""
-    )
 
-    # Enforce response language as the very first instruction
+    prompt_sections: list[str] = []
+
+    # Enforce response language as the very first instruction.
     response_language = metadata.get("response_language", "")
     if response_language and response_language != "auto":
-        lang_rule = (
+        prompt_sections.append(
             f"MANDATORY LANGUAGE: Write your ENTIRE response in {response_language}. "
-            f"Every field, every sentence must be in {response_language}. No other language permitted.\n\n"
+            f"Every field, every sentence must be in {response_language}. No other language permitted."
         )
-    else:
-        lang_rule = ""
 
-    prompt = (
-        f"{lang_rule}{persona_preamble}{persona_voice_preamble}{task_preamble}{image_preamble}"
-        f"{search_preamble}Operation: {operation}\n\n{instructions}\n\n"
-    )
-    prompt += "Respond with valid JSON containing these fields:\n"
+    prompt_sections.extend(build_persona_prefix(persona))
+    if task_title:
+        prompt_sections.append(f"=== DEBATE TOPIC ===\n{task_title}\n=== END TOPIC ===")
+    if image_note:
+        prompt_sections.append(image_note)
+    if search_policy:
+        prompt_sections.append(f"Search policy: {search_policy}")
+    prompt_sections.append(f"Operation: {operation}")
+    prompt_sections.append(instructions)
+
+    prompt = "\n\n".join(prompt_sections) + "\n\nRespond with valid JSON containing these fields:\n"
 
     if operation == "plan":
         prompt += "summary, evidence_basis (list), assumptions (list), architecture (list), implementation_strategy (list), "
@@ -96,9 +89,9 @@ def build_prompt(data: dict) -> str:
         prompt += "\n\nIMPORTANT: Every field must be strictly relevant to the debate topic above. "
         prompt += "Do not include generic content or examples unrelated to this specific task."
         if persona:
-            prompt += (
-                " Let the summary, assumptions, trade-offs, and open questions sound like the persona, "
-                "while keeping claims precise and evidence-backed."
+            prompt += " " + build_persona_expression_requirement(
+                "summary, assumptions, trade-offs, and open questions",
+                persona,
             )
     elif operation == "debate":
         prompt += "content, critique_points (list of {category, text, target_plan_ids, evidence}), "
@@ -114,9 +107,9 @@ def build_prompt(data: dict) -> str:
         prompt += "Do not introduce off-topic content or generic advice unrelated to this task. "
         prompt += f"{DEBATE_BEHAVIOR_GUARDRAIL} {DEBATE_HONESTY_GUARDRAIL}"
         if persona:
-            prompt += (
-                " Make the diction and argumentative rhythm in content, critique_points[*].text, "
-                "defense_points[*].text, and concessions sound recognizably like the persona."
+            prompt += " " + build_persona_expression_requirement(
+                "content, critique_points[*].text, defense_points[*].text, and concessions",
+                persona,
             )
     elif operation == "judge":
         prompt += "action (continue_debate|finalize|request_revision), confidence (float), "

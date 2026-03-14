@@ -698,6 +698,66 @@ def test_debate_prompt_reinforces_persona_voice(tmp_path):
     assert "critique points, defense points, and concessions" in prompt
 
 
+def test_debate_prompt_includes_structured_persona_voice_profile(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    persona = """
+    # Relentless Closer
+
+    > High-pressure operator who speaks in scoreboards and accountability.
+
+    ## Your Role
+    Drive the room toward measurable execution. Keep standards obvious.
+
+    ## Debating Style
+    - Push for concrete scoreboards, milestones, and visible progress.
+    - Challenge half-measures before they harden into the default.
+
+    ## Voice Signals
+    - Overall tone: clipped, intense, and forward-leaning.
+    - Signature move: turn vague optimism into a measurable demand.
+
+    ## Core Principles
+    - High standards are a feature, not a tax.
+    - Confidence should be earned through preparation.
+    """.strip()
+    agent_a = AgentConfig(
+        agent_id="agent-a",
+        display_name="Agent A",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-a"),
+        persona_content=persona,
+    )
+    agent_b = AgentConfig(
+        agent_id="agent-b",
+        display_name="Agent B",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-b"),
+    )
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Persona debate", problem_statement="Debate the better plan."),
+        agents=[agent_a, agent_b],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+        plans=[
+            PlanDocument(agent_id="agent-a", display_name="Plan A", summary="Plan A"),
+            PlanDocument(agent_id="agent-b", display_name="Plan B", summary="Plan B"),
+        ],
+    )
+
+    prompt = orchestrator.debate_engine._build_prompt(
+        run,
+        agent_a,
+        RoundType.CRITIQUE,
+        agenda=None,
+        instructions=None,
+        image_summary="",
+        has_image_inputs=False,
+    )
+
+    assert "PERSONA VOICE PROFILE:" in prompt
+    assert "Push for concrete scoreboards, milestones, and visible progress." in prompt
+    assert "High standards are a feature, not a tax." in prompt
+    assert "generic assistant prose" in prompt
+
+
 def test_debate_prompt_bans_judge_flattery_and_lies(tmp_path):
     orchestrator = build_orchestrator(tmp_path)
     agent_a = AgentConfig(

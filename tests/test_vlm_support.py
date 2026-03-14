@@ -200,6 +200,39 @@ def test_cli_wrapper_persona_prompt_enforces_voice_without_relaxing_guardrails()
     assert "critique_points[*].text" in prompt
 
 
+def test_cli_wrapper_persona_prompt_extracts_structured_voice_profile():
+    persona = """
+    # Relentless Closer
+
+    > High-pressure operator who speaks in scoreboards and accountability.
+
+    ## Debating Style
+    - Push for concrete scoreboards, milestones, and visible progress.
+    - Challenge half-measures before they harden into the default.
+
+    ## Voice Signals
+    - Overall tone: clipped, intense, and forward-leaning.
+    - Signature move: turn vague optimism into a measurable demand.
+
+    ## Core Principles
+    - High standards are a feature, not a tax.
+    """.strip()
+    prompt = build_prompt(
+        {
+            "operation": "debate",
+            "instructions": "Respond to the other plan.",
+            "metadata": {
+                "persona": persona,
+            },
+        }
+    )
+
+    assert "PERSONA VOICE PROFILE:" in prompt
+    assert "Push for concrete scoreboards, milestones, and visible progress." in prompt
+    assert "Overall tone: clipped, intense, and forward-leaning." in prompt
+    assert "High standards are a feature, not a tax." in prompt
+
+
 def test_cli_wrapper_debate_prompt_bans_flattery_and_fabrication():
     prompt = build_prompt(
         {

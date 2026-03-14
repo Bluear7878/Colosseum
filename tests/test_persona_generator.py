@@ -20,3 +20,5 @@ def test_persona_generator_uses_profile_fields():
     assert "analytical and calm" in persona.content
     assert "direct and evidence-driven" in persona.content
     assert "I hate bloated arguments" in persona.content
+    assert "## Voice Signals" in persona.content
+    assert "generic assistant wording" in persona.content

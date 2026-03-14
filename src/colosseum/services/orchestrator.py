@@ -435,7 +435,7 @@ class ColosseumOrchestrator:
             ),
             "Produce an independent plan before seeing any other plan.",
             build_evidence_policy(run.encourage_internet_search),
-            build_persona_expression_requirement("plan"),
+            build_persona_expression_requirement("plan", agent.persona_content),
             "Use this exact section structure: summary, evidence_basis, assumptions, architecture, implementation_strategy, risks, strengths, weaknesses, trade_offs, open_questions.",
             "Every major claim should be tied to objective evidence from the frozen bundle or labeled as inference/uncertainty.",
         ]

@@ -499,7 +499,8 @@ class DebateEngine:
                 "Unsupported claims reduce judge confidence. "
                 f"{DEBATE_BEHAVIOR_GUARDRAIL} {DEBATE_HONESTY_GUARDRAIL}",
                 build_persona_expression_requirement(
-                    "debate response, including content, critique points, defense points, and concessions"
+                    "debate response, including content, critique points, defense points, and concessions",
+                    agent.persona_content,
                 ),
             ]
         )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import textwrap
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -80,6 +81,7 @@ class MonitorState:
         self.verdict_type: str = ""
         self.verdict_winners: list[str] = []
         self.verdict_confidence: float = 0.0
+        self.final_answer: str = ""
 
         # Event log (last N)
         self.event_log: deque[dict] = deque(maxlen=20)
@@ -207,6 +209,7 @@ class MonitorState:
             self.verdict_type = data.get("verdict_type", "")
             self.verdict_winners = data.get("winners", [])
             self.verdict_confidence = data.get("confidence", 0.0)
+            self.final_answer = data.get("final_answer", "")
             self.phase = "complete"
             self.completed_phases.update(PHASE_ORDER)
             self.status = "completed"
@@ -228,6 +231,14 @@ def _bar(
     filled = int(value * width)
     filled = min(filled, width)
     return f"{GOLD}{filled_char * filled}{DIM}{empty_char * (width - filled)}{RST}"
+
+
+def _wrapped_lines(text: str, *, width: int = 58, prefix: str = "  ") -> list[str]:
+    """Wrap user-facing copy for the monitor layout."""
+    content = str(text or "").strip()
+    if not content:
+        return []
+    return [f"{prefix}{line}" for line in textwrap.wrap(content, width=width)]
 
 
 def _elapsed(started_at: datetime | None) -> str:
@@ -453,6 +464,9 @@ def render(state: MonitorState, term_height: int = 0) -> str:
         lines.append(
             f"  {vc}{BOLD}{state.verdict_type.upper()}{RST}: {', '.join(state.verdict_winners)}"
         )
+        if state.final_answer:
+            lines.append(f"  {CYAN}Final Answer:{RST}")
+            lines.extend(_wrapped_lines(state.final_answer, prefix="    "))
         lines.append(f"  {DIM}Confidence: {state.verdict_confidence:.2f}{RST}")
 
     # Error

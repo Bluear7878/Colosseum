@@ -56,6 +56,66 @@ class ReportSynthesizer:
                 seen.add(display_name)
         return names
 
+    def _winner_plans(
+        self,
+        run: ExperimentRun,
+        verdict: JudgeVerdict | None,
+    ) -> list:
+        if verdict is None:
+            return []
+        winning_ids = set(verdict.winning_plan_ids)
+        return [plan for plan in run.plans if plan.plan_id in winning_ids]
+
+    def _final_answer_for_verdict(
+        self,
+        run: ExperimentRun,
+        verdict: JudgeVerdict | None,
+    ) -> str:
+        if verdict is None:
+            return (
+                f"There is not yet a final answer to the user's question: "
+                f"{run.task.problem_statement}"
+            )
+
+        winner_names = self._winner_names(run, verdict)
+        winner_plans = self._winner_plans(run, verdict)
+        leading_plan = winner_plans[0] if winner_plans else None
+        caveats = verdict.rejected_risks[:2]
+        if not caveats and run.debate_rounds:
+            latest_adj = run.debate_rounds[-1].adjudication
+            if latest_adj:
+                caveats = latest_adj.unresolved_points[:2]
+
+        answer_parts: list[str] = []
+        if verdict.verdict_type == VerdictType.MERGED and verdict.synthesized_plan:
+            label = (
+                " + ".join(winner_names) if winner_names else "the strongest ideas from the debate"
+            )
+            answer_parts.append(
+                f"For the user's question, the best answer is a merged approach built from {label}."
+            )
+            answer_parts.append(verdict.synthesized_plan.summary)
+        elif leading_plan is not None:
+            winner_name = winner_names[0] if winner_names else leading_plan.display_name
+            answer_parts.append(
+                f"For the user's question, the best answer is to follow {winner_name}'s approach."
+            )
+            answer_parts.append(leading_plan.summary)
+        else:
+            answer_parts.append(
+                f"For the user's question, the debate supports this answer: {verdict.rationale}"
+            )
+
+        if verdict.selected_strengths:
+            answer_parts.append(
+                "Why this answer: " + "; ".join(verdict.selected_strengths[:2]) + "."
+            )
+        if caveats:
+            answer_parts.append("Key caveats: " + "; ".join(caveats) + ".")
+
+        cleaned_parts = [part.strip().rstrip(".") + "." for part in answer_parts if part.strip()]
+        return " ".join(cleaned_parts)
+
     def _headline_for_verdict(
         self,
         run: ExperimentRun,
@@ -87,6 +147,7 @@ class ReportSynthesizer:
 
         # --- one_line_verdict ---
         one_line = self._headline_for_verdict(run, verdict)
+        final_answer = self._final_answer_for_verdict(run, verdict)
 
         # --- executive_summary ---
         if verdict and verdict.verdict_type == VerdictType.MERGED:
@@ -165,6 +226,7 @@ class ReportSynthesizer:
 
         return FinalReport(
             one_line_verdict=one_line,
+            final_answer=final_answer,
             executive_summary=summary,
             key_conclusions=conclusions,
             debate_highlights=highlights,
@@ -217,6 +279,7 @@ class ReportSynthesizer:
             "Every section must be grounded in what actually happened — no generic advice or filler. "
             "Return JSON with keys: "
             "one_line_verdict (str, single bold sentence declaring the winner and core reason), "
+            "final_answer (str, 2-4 sentences directly answering the user's question based on the debate outcome), "
             "executive_summary (str), key_conclusions (list[str], include per-agent adopted arguments), "
             "debate_highlights (list[str]), verdict_explanation (str), recommendations (list[str])."
         )
@@ -249,6 +312,8 @@ class ReportSynthesizer:
             return None
         return FinalReport(
             one_line_verdict=str(payload.get("one_line_verdict", "")),
+            final_answer=str(payload.get("final_answer", ""))
+            or self._final_answer_for_verdict(run, verdict),
             executive_summary=str(payload.get("executive_summary", "")),
             key_conclusions=[str(i) for i in payload.get("key_conclusions", [])],
             debate_highlights=[str(i) for i in payload.get("debate_highlights", [])],

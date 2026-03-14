@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
+import zlib
 
 import pytest
 from fastapi import HTTPException
 
-from colosseum.api.routes import create_run_stream, get_run
+from colosseum.api.routes import (
+    create_run_stream,
+    download_run_markdown,
+    download_run_pdf,
+    get_run,
+)
 from colosseum.core.models import (
     AgentConfig,
     BillingTier,
@@ -18,8 +25,10 @@ from colosseum.core.models import (
     ContextSourceInput,
     ContextSourceKind,
     ExperimentRun,
+    FinalReport,
     HumanJudgeActionRequest,
     JudgeConfig,
+    JudgeVerdict,
     JudgeMode,
     PlanDocument,
     ProviderConfig,
@@ -28,16 +37,21 @@ from colosseum.core.models import (
     RunCreateRequest,
     TaskSpec,
     UsageMetrics,
+    VerdictType,
 )
 from colosseum.providers.mock import MockProvider
 from colosseum.services.budget import BudgetManager
 from colosseum.services.context_bundle import ContextBundleService
 from colosseum.services.debate import DebateEngine
 from colosseum.services.judge import JudgeService
+from colosseum.services.markdown_report import generate_markdown
 from colosseum.services.normalizers import ResponseNormalizer
 from colosseum.services.orchestrator import ColosseumOrchestrator
+from colosseum.services import pdf_report as pdf_report_module
+from colosseum.services.pdf_report import generate_pdf
 from colosseum.services.provider_runtime import ProviderRuntimeService
 from colosseum.services.repository import FileRunRepository
+from colosseum.services.report_synthesizer import ReportSynthesizer
 
 
 def build_orchestrator(tmp_path):
@@ -67,6 +81,23 @@ def build_orchestrator(tmp_path):
         normalizer=normalizer,
         provider_runtime=provider_runtime,
     )
+
+
+def _extract_pdf_text(pdf_bytes: bytes) -> str:
+    """Extract flate-compressed page text from a generated PDF."""
+    raw_pdf = pdf_bytes.decode("latin1", errors="ignore")
+    text_chunks: list[str] = []
+    pattern = re.compile(r"(\d+ \d+ obj.*?stream\r?\n)(.*?)(\r?\nendstream)", re.S)
+    for match in pattern.finditer(raw_pdf):
+        header, stream_data, _ = match.groups()
+        if "/FlateDecode" not in header:
+            continue
+        try:
+            decoded = zlib.decompress(stream_data.encode("latin1"))
+        except zlib.error:
+            continue
+        text_chunks.append(decoded.decode("latin1", errors="ignore"))
+    return "\n".join(text_chunks)
 
 
 # ── Bug fix: MockProvider produces varied plans ─────────────────
@@ -247,6 +278,7 @@ def test_cli_json_output_is_valid_json():
     data = json.loads(result.stdout)
     assert data["status"] == "completed"
     assert "verdict" in data
+    assert data["final_report"]["final_answer"].strip()
     assert len(data["plans"]) >= 2
 
 
@@ -400,6 +432,7 @@ def test_api_sse_complete_event_has_verdict_aware_final_report(tmp_path):
     assert complete_event["verdict"], "complete payload should include a verdict"
     assert final_report is not None, "complete payload should include a synthesized final report"
     assert final_report["one_line_verdict"].strip()
+    assert final_report["final_answer"].strip()
     assert "ended without a final verdict" not in final_report["one_line_verdict"]
     if complete_event["verdict"].get("verdict_type") == "merged":
         assert "Merged recommendation" in final_report["one_line_verdict"]
@@ -564,8 +597,136 @@ def test_cli_json_output_includes_verdict_details(tmp_path):
     assert "rejected_risks" in verdict
     assert isinstance(verdict["selected_strengths"], list)
     assert isinstance(verdict["rejected_risks"], list)
+    assert data["final_report"]["final_answer"].strip()
     if verdict["type"] == "merged":
         assert verdict["synthesized_plan"]["summary"]
+
+
+def test_report_synthesizer_generates_direct_final_answer():
+    """Heuristic report synthesis should directly answer the user's question."""
+    budget_manager = BudgetManager()
+    provider_runtime = ProviderRuntimeService(budget_manager=budget_manager)
+    synthesizer = ReportSynthesizer(provider_runtime=provider_runtime)
+
+    run = ExperimentRun(
+        project_name="final-answer",
+        task=TaskSpec(
+            title="Rollout Choice",
+            problem_statement="Should we choose the safer rollout path for this launch?",
+        ),
+        agents=[AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig())],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+    )
+    plan = PlanDocument(
+        agent_id="a",
+        display_name="A",
+        summary="Choose the safer rollout path with phased deployment and rollback guards.",
+        strengths=["Lower operational risk", "Clear rollback path"],
+        open_questions=["Confirm telemetry thresholds before launch."],
+    )
+    run.plans = [plan]
+    verdict = JudgeVerdict(
+        judge_mode=JudgeMode.AUTOMATED,
+        verdict_type=VerdictType.WINNER,
+        winning_plan_ids=[plan.plan_id],
+        rationale="The safer rollout has the better risk profile.",
+        selected_strengths=["Lower operational risk", "Clear rollback path"],
+        rejected_risks=["Telemetry thresholds still need confirmation"],
+        stop_reason="judge_finalize",
+        confidence=0.87,
+    )
+
+    report = asyncio.run(synthesizer.synthesize(run, verdict=verdict))
+
+    assert "best answer is to follow A's approach" in report.final_answer
+    assert "safer rollout path" in report.final_answer
+    assert "Telemetry thresholds still need confirmation" in report.final_answer
+
+
+def test_pdf_report_includes_final_answer_section(monkeypatch):
+    """Generated PDFs should foreground the direct answer to the user's question."""
+    monkeypatch.setattr(pdf_report_module, "_resolve_unicode_font_paths", lambda: None)
+    run = ExperimentRun(
+        project_name="pdf-answer",
+        task=TaskSpec(title="PDF Answer", problem_statement="What should we do?"),
+        agents=[AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig())],
+        judge=JudgeConfig(),
+        final_report=FinalReport(
+            final_answer="You should choose the safer rollout with staged checks.",
+            executive_summary="The debate favored staged rollout over the aggressive option.",
+        ),
+    )
+
+    pdf_text = _extract_pdf_text(generate_pdf(run))
+
+    assert "Answer to the User Question" in pdf_text
+    assert "You should choose the safer rollout with staged checks." in pdf_text
+
+
+def test_pdf_report_supports_unicode_content():
+    """Unicode-heavy reports should export without font encoding failures."""
+    run = ExperimentRun(
+        project_name="unicode-pdf",
+        task=TaskSpec(title="한국어 리포트", problem_statement="무엇을 해야 하나요?"),
+        agents=[AgentConfig(agent_id="a", display_name="메시", provider=ProviderConfig())],
+        judge=JudgeConfig(),
+        final_report=FinalReport(
+            final_answer="질문에 대한 최종 답변은 단계적으로 배포하는 것입니다.",
+            executive_summary="판사는 위험을 낮추는 점진적 배포를 권고했습니다.",
+        ),
+    )
+
+    pdf_bytes = generate_pdf(run)
+
+    assert isinstance(pdf_bytes, bytes)
+    assert len(pdf_bytes) > 1000
+
+
+def test_markdown_report_includes_direct_answer():
+    """Markdown export should foreground the direct answer section."""
+    run = ExperimentRun(
+        project_name="markdown-answer",
+        task=TaskSpec(title="Markdown Answer", problem_statement="What should we do next?"),
+        agents=[AgentConfig(agent_id="a", display_name="A", provider=ProviderConfig())],
+        judge=JudgeConfig(),
+        final_report=FinalReport(
+            final_answer="You should proceed with a phased rollout and explicit rollback checks.",
+            executive_summary="The debate favored the safer staged rollout.",
+            recommendations=["Confirm monitoring thresholds before launch."],
+        ),
+    )
+
+    markdown = generate_markdown(run)
+
+    assert "## Final Answer" in markdown
+    assert "phased rollout" in markdown
+    assert "## Executive Summary" in markdown
+
+
+def test_api_report_download_endpoints_return_pdf_and_markdown(tmp_path):
+    """Completed runs should be downloadable as PDF and Markdown artifacts."""
+    orchestrator = build_orchestrator(tmp_path)
+    run = ExperimentRun(
+        project_name="download-artifacts",
+        task=TaskSpec(title="다운로드 테스트", problem_statement="어떻게 해야 하나요?"),
+        agents=[AgentConfig(agent_id="a", display_name="호날두", provider=ProviderConfig())],
+        judge=JudgeConfig(),
+        final_report=FinalReport(
+            final_answer="질문에 대한 최종 답변은 안전한 단계적 배포입니다.",
+            executive_summary="토론은 안전한 배포 전략을 선택했습니다.",
+        ),
+    )
+    orchestrator.repository.save_run(run)
+
+    pdf_response = asyncio.run(download_run_pdf(run.run_id, orchestrator=orchestrator))
+    markdown_response = asyncio.run(download_run_markdown(run.run_id, orchestrator=orchestrator))
+
+    assert pdf_response.media_type == "application/pdf"
+    assert len(pdf_response.body) > 1000
+    assert markdown_response.media_type == "text/markdown; charset=utf-8"
+    markdown_text = markdown_response.body.decode("utf-8")
+    assert "## Final Answer" in markdown_text
+    assert "안전한 단계적 배포" in markdown_text
 
 
 # ── Internal: MockProvider all operations ─────────────────────

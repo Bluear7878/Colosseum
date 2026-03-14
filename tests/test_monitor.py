@@ -133,10 +133,12 @@ def test_monitor_state_processes_events():
                 "verdict_type": "winner",
                 "winners": ["Claude"],
                 "confidence": 0.88,
+                "final_answer": "Choose Claude's approach because it is more reliable.",
             },
         }
     )
     assert state.verdict_type == "winner"
+    assert "more reliable" in state.final_answer
     assert state.status == "completed"
 
 
@@ -158,6 +160,10 @@ def test_render_produces_output():
     state.last_judge_action = "continue_debate"
     state.last_judge_confidence = 0.72
     state.last_judge_disagreement = 0.5
+    state.verdict_type = "winner"
+    state.verdict_winners = ["Claude"]
+    state.verdict_confidence = 0.88
+    state.final_answer = "Choose Claude's approach because it directly answers the user's question."
 
     output = render(state, term_height=40)
     assert "COLOSSEUM MONITOR" in output
@@ -166,6 +172,9 @@ def test_render_produces_output():
     assert "Claude" in output
     assert "Codex" in output
     assert "CONTINUE_DEBATE" in output
+    assert "Final Answer" in output
+    assert "directly answers" in output
+    assert "user's question" in output
 
 
 def test_event_bus_path_for(tmp_path: Path):

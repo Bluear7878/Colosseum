@@ -171,7 +171,7 @@ function renderDebateConclusion(run) {
   show("debate-conclusion");
 
   // One-line verdict headline
-  var headlineText = (fr && fr.one_line_verdict) || "";
+  var headlineText = (fr && (fr.one_line_verdict || fr.final_answer)) || "";
   if (!headlineText && verdict) {
     var winnerName = winnerDisplayName(run);
     if (winnerName && verdict.verdict_type === "merged") {
@@ -252,6 +252,12 @@ function renderFinalReport(run) {
   var fr = run.final_report;
   var html = '';
 
+  if (fr.final_answer) {
+    html += '<div class="conclusion-card conclusion-card-full">' +
+      '<div class="conclusion-card-label">질문에 대한 최종 답변</div>' +
+      '<p class="report-copy">' + esc(fr.final_answer) + '</p>' +
+    '</div>';
+  }
   if (fr.executive_summary) {
     html += '<div class="conclusion-card conclusion-card-full">' +
       '<div class="conclusion-card-label">판사의 종합 판결</div>' +
@@ -600,42 +606,63 @@ function renderHumanPanel(run) {
   show("human-judge-panel");
 }
 
-// ─── PDF download ────────────────────────────────────────────────────────────
+// ─── Report downloads ────────────────────────────────────────────────────────
 
-function setupPdfDownload(run) {
-  var btn = document.getElementById("download-pdf-btn");
+function setupDownloadButton(run, config) {
+  var btn = document.getElementById(config.id);
   if (!btn) return;
   if (run.status === "completed" || run.status === "failed") {
     btn.classList.remove("hidden");
     btn.onclick = function() {
       btn.disabled = true;
-      btn.textContent = "Generating...";
-      fetch("/runs/" + encodeURIComponent(run.run_id) + "/pdf")
+      btn.textContent = config.loadingText;
+      fetch("/runs/" + encodeURIComponent(run.run_id) + config.path)
         .then(function(r) {
-          if (!r.ok) throw new Error("PDF generation failed: " + r.status);
+          if (!r.ok) throw new Error(config.errorPrefix + ": " + r.status);
           return r.blob();
         })
         .then(function(blob) {
           var url = URL.createObjectURL(blob);
           var a = document.createElement("a");
           a.href = url;
-          a.download = "colosseum-report-" + run.run_id.slice(0, 8) + ".pdf";
+          a.download = "colosseum-report-" + run.run_id.slice(0, 8) + config.extension;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           URL.revokeObjectURL(url);
         })
         .catch(function(err) {
-          toast(err.message || "PDF download failed.");
+          toast(err.message || config.fallbackError);
         })
         .then(function() {
           btn.disabled = false;
-          btn.textContent = "Download PDF";
+          btn.textContent = config.defaultText;
         });
     };
   } else {
     btn.classList.add("hidden");
   }
+}
+
+function setupReportDownloads(run) {
+  setupDownloadButton(run, {
+    id: "download-pdf-btn",
+    path: "/pdf",
+    extension: ".pdf",
+    defaultText: "Download PDF",
+    loadingText: "Generating PDF...",
+    errorPrefix: "PDF generation failed",
+    fallbackError: "PDF download failed."
+  });
+  setupDownloadButton(run, {
+    id: "download-md-btn",
+    path: "/markdown",
+    extension: ".md",
+    defaultText: "Download Markdown",
+    loadingText: "Generating Markdown...",
+    errorPrefix: "Markdown generation failed",
+    fallbackError: "Markdown download failed."
+  });
 }
 
 // ─── Master render ────────────────────────────────────────────────────────────
@@ -653,7 +680,7 @@ function renderRun(run) {
   renderTimeline(run);
   renderUsage(run);
   renderEvents(run);
-  setupPdfDownload(run);
+  setupReportDownloads(run);
 }
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────

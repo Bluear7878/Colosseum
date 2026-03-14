@@ -692,6 +692,9 @@ def cmd_show(args: argparse.Namespace) -> None:
         v = run.verdict
         vtype_color = MAGENTA if v.verdict_type.value == "merged" else GOLD
         print(f"  {vtype_color}{BOLD}Verdict: {v.verdict_type.upper()}{RST}")
+        if run.final_report and run.final_report.final_answer:
+            print(f"    {CYAN}Answer:{RST}")
+            print(_wrap(run.final_report.final_answer, indent=6))
         print(_wrap(v.rationale, indent=4))
         if v.selected_strengths:
             print(f"    {GREEN}Strengths:{RST} {', '.join(v.selected_strengths[:4])}")
@@ -1349,6 +1352,8 @@ def cmd_debate(args: argparse.Namespace) -> None:
         }
         if run.verdict:
             result["verdict"] = _verdict_json_payload(run.verdict)
+        if run.final_report:
+            result["final_report"] = run.final_report.model_dump(mode="json")
         print(_json.dumps(result, indent=2))
         return
 
@@ -1609,6 +1614,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
                 "winners": winner_names,
                 "confidence": run.verdict.confidence if run.verdict else 0,
                 "stop_reason": run.stop_reason or "",
+                "final_answer": run.final_report.final_answer if run.final_report else "",
             },
         )
         bus.emit("phase", {"phase": "complete", "status": "completed"})
@@ -1747,6 +1753,10 @@ def _verdict(run):
 
     print(f"  {color}{BOLD}  VERDICT: {vtype} — {' & '.join(winner_names)}{RST}")
     print(f"  {'=' * 60}")
+    if run.final_report and run.final_report.final_answer:
+        print(f"  {CYAN}{BOLD}Answer:{RST}")
+        print(_wrap(run.final_report.final_answer, indent=4))
+        print()
     print(_wrap(v.rationale, indent=4))
 
     if v.selected_strengths:

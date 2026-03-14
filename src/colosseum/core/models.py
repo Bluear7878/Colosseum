@@ -832,6 +832,7 @@ class RuntimeEvent(BaseModel):
 
 class FinalReport(BaseModel):
     one_line_verdict: str = ""
+    final_answer: str = ""
     executive_summary: str
     key_conclusions: list[str] = Field(default_factory=list)
     debate_highlights: list[str] = Field(default_factory=list)

@@ -128,7 +128,7 @@ def build_prompt(data: dict) -> str:
         prompt += "\n\nIMPORTANT: Your focus_areas and reasoning must be directly tied to the debate topic. "
         prompt += "Only continue the debate if agents are producing new, topic-relevant evidence. "
         prompt += "Do not invent new round labels."
-    elif operation in ("synthesis", "report_synthesis"):
+    elif operation == "synthesis":
         prompt += "summary, evidence_basis (list), assumptions (list), architecture (list), implementation_strategy (list), "
         prompt += (
             "risks (list of {title, severity, mitigation}), strengths (list), weaknesses (list), "
@@ -137,6 +137,12 @@ def build_prompt(data: dict) -> str:
         prompt += "\n\nIMPORTANT: The synthesis must be strictly focused on the debate topic. "
         prompt += "Select only the strongest evidence-backed ideas from the debate. "
         prompt += "Do not include generic filler or content unrelated to this specific task."
+    elif operation == "report_synthesis":
+        prompt += "one_line_verdict, final_answer, executive_summary, key_conclusions (list), "
+        prompt += "debate_highlights (list), verdict_explanation, recommendations (list)"
+        prompt += "\n\nIMPORTANT: final_answer must directly answer the user's question, not just describe the debate. "
+        prompt += "Explain what the user should do or believe after reading the debate. "
+        prompt += "Keep every field grounded in the actual debate record and verdict."
 
     prompt += "\n\nRule: prefer objective evidence from the provided context bundle. If a claim is inferential or uncertain, say so."
     prompt += "\n\nReturn ONLY valid JSON, no markdown fences or extra text."

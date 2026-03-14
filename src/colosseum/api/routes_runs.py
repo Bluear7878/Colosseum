@@ -421,6 +421,7 @@ async def _finalize_stream_run(
             "verdict_type": verdict.verdict_type.value,
             "winners": winner_names,
             "confidence": verdict.confidence,
+            "final_answer": final_report.final_answer if final_report else "",
         },
     )
     bus.emit("phase", {"phase": "complete", "status": "completed"})
@@ -488,6 +489,27 @@ async def download_run_pdf(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/runs/{run_id}/markdown")
+async def download_run_markdown(
+    run_id: str,
+    orchestrator=Depends(get_orchestrator),
+):
+    try:
+        run = orchestrator.load_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from colosseum.services.markdown_report import generate_markdown
+
+    markdown_text = generate_markdown(run)
+    filename = f"colosseum-report-{run_id[:8]}.md"
+    return Response(
+        content=markdown_text.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

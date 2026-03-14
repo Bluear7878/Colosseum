@@ -213,6 +213,19 @@ def test_cli_wrapper_debate_prompt_bans_flattery_and_fabrication():
     assert "no fabricated evidence" in prompt.lower()
 
 
+def test_cli_wrapper_report_synthesis_prompt_requests_direct_answer():
+    prompt = build_prompt(
+        {
+            "operation": "report_synthesis",
+            "instructions": "Summarize the debate.",
+            "metadata": {},
+        }
+    )
+
+    assert "final_answer" in prompt
+    assert "directly answer the user's question" in prompt
+
+
 def test_call_gemini_prefers_plain_headless_mode(monkeypatch):
     commands: list[list[str]] = []
 

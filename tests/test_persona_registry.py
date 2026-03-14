@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from colosseum.core.models import PersonaProfileRequest
 from colosseum.personas.generator import PersonaGenerator
 from colosseum.personas.loader import PersonaLoader
@@ -162,3 +164,14 @@ def test_builtin_public_figure_personas_are_registered_with_safety_guardrails():
     assert karpathy is not None
     assert "Do not claim to be Cristiano Ronaldo" in ronaldo.content
     assert "Do not claim to be Andrej Karpathy" in karpathy.content
+
+
+def test_builtin_personas_define_explicit_voice_signal_sections():
+    builtin_dir = Path("src/colosseum/personas/builtin")
+    persona_files = sorted(builtin_dir.glob("*.md"))
+
+    assert persona_files, "Expected builtin persona files to exist."
+    for path in persona_files:
+        content = path.read_text(encoding="utf-8")
+        assert "## Voice Signals" in content, f"{path.name} is missing a Voice Signals section."
+        assert "## Signature Moves" in content, f"{path.name} is missing a Signature Moves section."

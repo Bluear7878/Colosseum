@@ -132,7 +132,7 @@ function saveBooleanSetting(key, value) {
 
 var customModels = loadCustomModels();
 
-var gladiatorPersonas = {};  // id -> {persona_id, persona_content}
+var gladiatorPersonas = {};  // id -> {persona_id, persona_name, persona_content}
 var availablePersonas = [];  // fetched from /personas
 var personaBuilderTarget = null;
 var paidQuotaStates = {};     // quota_key -> state
@@ -388,6 +388,22 @@ function resetPersonaSelectValue(gid) {
   var persona = gladiatorPersonas[gid];
   if (persona && persona.persona_id && persona.persona_id !== "__custom__") sel.value = persona.persona_id;
   else sel.value = "";
+}
+
+function personaMetaById(personaId) {
+  return (availablePersonas || []).find(function(p) { return p.persona_id === personaId; }) || null;
+}
+
+function humanizePersonaId(personaId) {
+  var cleaned = String(personaId || "").replace(/^_+|_+$/g, "").replace(/[_-]+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.replace(/\b[a-z]/g, function(ch) { return ch.toUpperCase(); });
+}
+
+function extractPersonaNameFromContent(content) {
+  var match = String(content || "").match(/^\s*#\s+(.+?)\s*$/m);
+  if (match && match[1]) return match[1].trim();
+  return "";
 }
 
 function col(title, items) {
@@ -786,7 +802,12 @@ function createGladiatorCard(g) {
     } else if (val) {
       // Fetch persona content
       api("/personas/" + val).then(function(data) {
-        gladiatorPersonas[g.id] = { persona_id: val, persona_content: data.content };
+        var meta = personaMetaById(val);
+        gladiatorPersonas[g.id] = {
+          persona_id: val,
+          persona_name: meta ? meta.name : humanizePersonaId(val),
+          persona_content: data.content
+        };
       }).catch(function() {
         toast("Failed to load persona.");
         perSel.value = "";
@@ -846,7 +867,12 @@ function createCustomCard(m) {
       openPersonaModal(m.id);
     } else if (val) {
       api("/personas/" + val).then(function(data) {
-        gladiatorPersonas[m.id] = { persona_id: val, persona_content: data.content };
+        var meta = personaMetaById(val);
+        gladiatorPersonas[m.id] = {
+          persona_id: val,
+          persona_name: meta ? meta.name : humanizePersonaId(val),
+          persona_content: data.content
+        };
       }).catch(function() {
         toast("Failed to load persona.");
         perSel.value = "";
@@ -1662,9 +1688,14 @@ function previewPersona(personaId) {
 }
 
 document.getElementById("persona-apply-btn").addEventListener("click", function() {
+  var name = document.getElementById("persona-name").value.trim();
   var content = document.getElementById("persona-editor").value.trim();
   if (content && personaModalTarget) {
-    gladiatorPersonas[personaModalTarget] = { persona_id: "__custom__", persona_content: content };
+    gladiatorPersonas[personaModalTarget] = {
+      persona_id: "__custom__",
+      persona_name: name || extractPersonaNameFromContent(content) || "Custom Persona",
+      persona_content: content
+    };
     toast("Persona applied to this gladiator.");
   }
   hide("persona-modal");
@@ -1685,7 +1716,11 @@ document.getElementById("persona-save-server-btn").addEventListener("click", fun
     toast("Saved: " + meta.name);
     // Apply to current gladiator too
     if (personaModalTarget) {
-      gladiatorPersonas[personaModalTarget] = { persona_id: pid, persona_content: content };
+      gladiatorPersonas[personaModalTarget] = {
+        persona_id: pid,
+        persona_name: meta.name || name,
+        persona_content: content
+      };
     }
     // Refresh persona list
     fetchPersonas().then(function() { renderGladiatorGrid(); });
@@ -1993,6 +2028,7 @@ function buildPayload() {
     };
     if (persona) {
       agentObj.persona_id = persona.persona_id;
+      agentObj.persona_name = persona.persona_name;
       agentObj.persona_content = persona.persona_content;
     }
     agents.push(agentObj);
@@ -2008,6 +2044,7 @@ function buildPayload() {
       specialty: m.desc,
       provider: buildProviderPayloadFromCustomModel(m),
       persona_id: persona ? persona.persona_id : undefined,
+      persona_name: persona ? persona.persona_name : undefined,
       persona_content: persona ? persona.persona_content : undefined
     });
   });

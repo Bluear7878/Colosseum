@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import subprocess
 
 from colosseum.core.models import (
     AgentConfig,
@@ -12,7 +13,7 @@ from colosseum.core.models import (
     RunCreateRequest,
     TaskSpec,
 )
-from colosseum.providers.cli_wrapper import build_prompt
+from colosseum.providers.cli_wrapper import build_prompt, call_gemini
 from colosseum.services.budget import BudgetManager
 from colosseum.services.context_bundle import ContextBundleService
 from colosseum.services.debate import DebateEngine
@@ -197,3 +198,78 @@ def test_cli_wrapper_persona_prompt_enforces_voice_without_relaxing_guardrails()
         in prompt
     )
     assert "critique_points[*].text" in prompt
+
+
+def test_cli_wrapper_debate_prompt_bans_flattery_and_fabrication():
+    prompt = build_prompt(
+        {
+            "operation": "debate",
+            "instructions": "Debate the peer plan.",
+            "metadata": {},
+        }
+    )
+
+    assert "Do not flatter the judge" in prompt
+    assert "no fabricated evidence" in prompt.lower()
+
+
+def test_call_gemini_prefers_plain_headless_mode(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        commands.append(list(cmd))
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout='{"content":"ok"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("colosseum.providers.cli_adapters.subprocess.run", fake_run)
+
+    raw = call_gemini("say ok", model="gemini-2.5-pro")
+
+    assert raw == '{"content":"ok"}'
+    assert commands == [["gemini", "--model", "gemini-2.5-pro", "-p", "say ok"]]
+
+
+def test_call_gemini_strips_banner_noise_and_falls_back(monkeypatch):
+    commands: list[list[str]] = []
+    responses = [
+        subprocess.CompletedProcess(
+            ["gemini", "--model", "gemini-2.5-pro", "-p", "say ok"],
+            1,
+            stdout="",
+            stderr="approval required",
+        ),
+        subprocess.CompletedProcess(
+            ["gemini", "--model", "gemini-2.5-pro", "--approval-mode", "yolo", "-p", "say ok"],
+            0,
+            stdout=(
+                "YOLO mode is enabled. All tool calls will be automatically approved.\n"
+                "Loaded cached credentials.\n"
+                '{"content":"ok"}'
+            ),
+            stderr="",
+        ),
+    ]
+
+    def fake_run(cmd, capture_output, text, timeout):
+        commands.append(list(cmd))
+        return responses[len(commands) - 1]
+
+    monkeypatch.setattr("colosseum.providers.cli_adapters.subprocess.run", fake_run)
+
+    raw = call_gemini("say ok", model="gemini-2.5-pro")
+
+    assert raw == '{"content":"ok"}'
+    assert commands[0] == ["gemini", "--model", "gemini-2.5-pro", "-p", "say ok"]
+    assert commands[1] == [
+        "gemini",
+        "--model",
+        "gemini-2.5-pro",
+        "--approval-mode",
+        "yolo",
+        "-p",
+        "say ok",
+    ]

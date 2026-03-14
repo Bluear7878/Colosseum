@@ -18,6 +18,11 @@ from colosseum.personas.prompting import (
     PERSONA_STYLE_GUARDRAIL,
     PERSONA_VOICE_CONTRACT,
 )
+from colosseum.providers.cli_adapters import build_cli_adapter
+from colosseum.services.prompt_contracts import (
+    DEBATE_BEHAVIOR_GUARDRAIL,
+    DEBATE_HONESTY_GUARDRAIL,
+)
 
 
 def read_input() -> dict:
@@ -35,6 +40,11 @@ def get_subprocess_timeout() -> float | None:
         return None
     val = int(raw)
     return None if val == 0 else float(val)
+
+
+def _strip_gemini_noise(raw: str) -> str:
+    """Backward-compatible Gemini stdout sanitizer."""
+    return build_cli_adapter("gemini").normalize_stdout(raw)
 
 
 def build_prompt(data: dict) -> str:
@@ -101,7 +111,8 @@ def build_prompt(data: dict) -> str:
         )
         prompt += "Rebut what you disagree with, concede well-supported points. "
         prompt += "Evidence quality matters more than rhetoric: cite the frozen context or state uncertainty. "
-        prompt += "Do not introduce off-topic content or generic advice unrelated to this task."
+        prompt += "Do not introduce off-topic content or generic advice unrelated to this task. "
+        prompt += f"{DEBATE_BEHAVIOR_GUARDRAIL} {DEBATE_HONESTY_GUARDRAIL}"
         if persona:
             prompt += (
                 " Make the diction and argumentative rhythm in content, critique_points[*].text, "
@@ -154,138 +165,23 @@ def build_image_note(metadata: dict) -> str:
 
 
 def call_claude(prompt: str, model: str = "") -> str:
-    """Call Claude Code CLI: claude -p <prompt> [--model <model>]
-
-    Uses --output-format json which wraps the response in
-    {"type":"result","result":"<actual text>"}.  We unwrap it here so
-    parse_response receives the raw model text.
-    """
-    env = {**os.environ, "CLAUDECODE": ""}  # avoid nested-session guard
-    cmd = ["claude", "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions"]
-    if model:
-        cmd.extend(["--model", model])
-    sp_timeout = get_subprocess_timeout()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=sp_timeout, env=env)
-    raw = result.stdout.strip()
-
-    # Unwrap Claude CLI JSON envelope: {"type":"result","result":"<text>"}
-    if raw:
-        try:
-            envelope = json.loads(raw)
-            if isinstance(envelope, dict) and "result" in envelope:
-                inner = envelope["result"]
-                if isinstance(inner, str):
-                    return inner.strip()
-                # result might already be a dict
-                return json.dumps(inner)
-        except json.JSONDecodeError:
-            pass
-
-    # Fallback: plain text mode
-    if result.returncode != 0 or not raw:
-        cmd2 = ["claude", "-p", prompt]
-        if model:
-            cmd2.extend(["--model", model])
-        result = subprocess.run(cmd2, capture_output=True, text=True, timeout=sp_timeout, env=env)
-        raw = result.stdout.strip()
-
-    return raw
+    """Call Claude CLI through the shared adapter layer."""
+    return build_cli_adapter("claude", model=model).call(prompt)
 
 
 def call_codex(prompt: str, model: str = "") -> str:
-    """Call OpenAI Codex CLI non-interactively via `codex exec`.
-
-    Uses -o to write clean output to a temp file, since stdout mixes
-    agent logs with the actual response.
-    """
-    import tempfile
-
-    fd, out_file = tempfile.mkstemp(suffix=".txt", prefix="codex_")
-    os.close(fd)
-    cmd = [
-        "codex",
-        "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "-o",
-        out_file,
-    ]
-    if model:
-        cmd.extend(["--model", model])
-    cmd.append(prompt)
-
-    sp_timeout = get_subprocess_timeout()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=sp_timeout)
-
-    # Read clean output from file
-    raw = ""
-    try:
-        with open(out_file, encoding="utf-8") as f:
-            raw = f.read().strip()
-    except FileNotFoundError:
-        pass
-    finally:
-        try:
-            os.unlink(out_file)
-        except OSError:
-            pass
-
-    if raw:
-        return raw
-
-    # Fallback: parse stdout (last non-empty line is usually the response)
-    if result.stdout.strip():
-        lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
-        if lines:
-            return lines[-1].strip()
-
-    return ""
+    """Call Codex CLI through the shared adapter layer."""
+    return build_cli_adapter("codex", model=model).call(prompt)
 
 
 def call_gemini(prompt: str, model: str = "") -> str:
-    """Call Gemini CLI: gemini [--model <model>] -p <prompt> --yolo"""
-    sp_timeout = get_subprocess_timeout()
-    cmd = ["gemini", "--yolo"]
-    if model:
-        cmd.extend(["--model", model])
-    cmd.extend(["-p", prompt])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=sp_timeout)
-    raw = result.stdout.strip()
-
-    # If stdout is empty, check stderr for clues and retry without --yolo
-    if not raw:
-        stderr = result.stderr.strip()
-        # Retry without --yolo flag in case it's unsupported
-        cmd_retry = ["gemini"]
-        if model:
-            cmd_retry.extend(["--model", model])
-        cmd_retry.extend(["-p", prompt])
-        result2 = subprocess.run(cmd_retry, capture_output=True, text=True, timeout=sp_timeout)
-        raw = result2.stdout.strip()
-
-        # If still empty, return a structured error so it propagates clearly
-        if not raw:
-            combined_err = stderr or result2.stderr.strip()
-            return json.dumps(
-                {
-                    "content": f"Gemini CLI returned empty output. stderr: {combined_err[:300]}",
-                    "error": "empty_response",
-                }
-            )
-
-    return raw
+    """Call Gemini CLI through the shared adapter layer."""
+    return build_cli_adapter("gemini", model=model).call(prompt)
 
 
 def call_ollama(prompt: str, model: str = "llama3.3") -> str:
-    """Call Ollama: ollama run <model> <prompt>"""
-    if os.environ.get("COLOSSEUM_LOCAL_RUNTIME_MANAGED") == "1":
-        from colosseum.services.local_runtime import LocalRuntimeService
-
-        LocalRuntimeService().ensure_runtime_started()
-    sp_timeout = get_subprocess_timeout()
-    result = subprocess.run(
-        ["ollama", "run", model, prompt], capture_output=True, text=True, timeout=sp_timeout
-    )
-    return result.stdout.strip()
+    """Call Ollama through the shared adapter layer."""
+    return build_cli_adapter("ollama", model=model).call(prompt)
 
 
 def parse_response(raw: str) -> dict:
@@ -339,16 +235,11 @@ def main():
     model = args.model or data.get("metadata", {}).get("model") or data.get("model", "")
 
     try:
-        if args.provider == "claude":
-            raw = call_claude(prompt, model=model)
-        elif args.provider == "codex":
-            raw = call_codex(prompt, model=model)
-        elif args.provider == "gemini":
-            raw = call_gemini(prompt, model=model)
-        elif args.provider in ("ollama", "huggingface"):
-            raw = call_ollama(prompt, model=model or "llama3.3")
-        else:
-            raw = '{"content": "Unsupported provider"}'
+        effective_model = model
+        if args.provider in {"ollama", "huggingface"} and not effective_model:
+            effective_model = "llama3.3"
+        adapter = build_cli_adapter(args.provider, model=effective_model)
+        raw = adapter.call(prompt)
     except FileNotFoundError:
         print(
             json.dumps(

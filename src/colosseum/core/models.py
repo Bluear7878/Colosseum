@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Self
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
@@ -11,6 +11,14 @@ from pydantic import BaseModel, Field, computed_field, field_validator, model_va
 def utc_now() -> datetime:
     """Return the current UTC timestamp for persisted runtime artifacts."""
     return datetime.now(timezone.utc)
+
+
+def humanize_identifier(value: str) -> str:
+    """Convert a stored identifier like ``andrej_karpathy`` into display text."""
+    parts = [part for part in str(value or "").replace("-", "_").split("_") if part]
+    if not parts:
+        return ""
+    return " ".join(part[:1].upper() + part[1:] for part in parts)
 
 
 class TaskType(StrEnum):
@@ -62,19 +70,134 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
-class RoundType(StrEnum):
+class NormalizedStrEnum(StrEnum):
+    """String enum with alias-aware coercion for model-facing inputs."""
+
+    @classmethod
+    def alias_map(cls) -> dict[str, Self]:
+        return {}
+
+    @classmethod
+    def heuristic_match(cls, normalized: str) -> Self | None:
+        del normalized
+        return None
+
+    @classmethod
+    def normalize_candidates(cls, value: object) -> list[str]:
+        if isinstance(value, cls):
+            return [value.value]
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return []
+        candidates = [normalized, normalized.replace("-", "_").replace(" ", "_")]
+        extras: list[str] = []
+        for candidate in candidates:
+            if candidate.endswith("_round"):
+                extras.append(candidate[: -len("_round")])
+            if candidate.startswith("round_"):
+                extras.append(candidate[len("round_") :])
+        ordered: list[str] = []
+        for candidate in candidates + extras:
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
+
+    @classmethod
+    def coerce(cls, value: object, fallback: Self) -> Self:
+        for candidate in cls.normalize_candidates(value):
+            try:
+                return cls(candidate)
+            except ValueError:
+                pass
+        for candidate in cls.normalize_candidates(value):
+            resolved = cls.alias_map().get(candidate)
+            if resolved is not None:
+                return resolved
+        normalized = next(iter(cls.normalize_candidates(value)), "")
+        resolved = cls.heuristic_match(normalized)
+        return resolved if resolved is not None else fallback
+
+    @classmethod
+    def supported_values(cls) -> tuple[str, ...]:
+        return tuple(member.value for member in cls)
+
+
+class RoundType(NormalizedStrEnum):
     CRITIQUE = "critique"
     REBUTTAL = "rebuttal"
     SYNTHESIS = "synthesis"
     FINAL_COMPARISON = "final_comparison"
     TARGETED_REVISION = "targeted_revision"
 
+    @classmethod
+    def alias_map(cls) -> dict[str, Self]:
+        return {
+            "opening": cls.CRITIQUE,
+            "initial_critique": cls.CRITIQUE,
+            "evidence_gathering": cls.CRITIQUE,
+            "initial_evidence_gathering": cls.CRITIQUE,
+            "initial_fact_gathering": cls.CRITIQUE,
+            "rebut": cls.REBUTTAL,
+            "response": cls.REBUTTAL,
+            "synthesize": cls.SYNTHESIS,
+            "merge": cls.SYNTHESIS,
+            "comparison": cls.FINAL_COMPARISON,
+            "final": cls.FINAL_COMPARISON,
+            "revision": cls.TARGETED_REVISION,
+            "targeted_fix": cls.TARGETED_REVISION,
+            "focused_revision": cls.TARGETED_REVISION,
+        }
 
-class JudgeActionType(StrEnum):
+    @classmethod
+    def heuristic_match(cls, normalized: str) -> Self | None:
+        if "rebut" in normalized or "respond" in normalized:
+            return cls.REBUTTAL
+        if "synth" in normalized or "merge" in normalized:
+            return cls.SYNTHESIS
+        if "compar" in normalized or normalized == "final":
+            return cls.FINAL_COMPARISON
+        if "revision" in normalized or "revise" in normalized:
+            return cls.TARGETED_REVISION
+        if "critique" in normalized or "evidence" in normalized or "gather" in normalized:
+            return cls.CRITIQUE
+        return None
+
+
+class JudgeActionType(NormalizedStrEnum):
     CONTINUE_DEBATE = "continue_debate"
     FINALIZE = "finalize"
     REQUEST_REVISION = "request_revision"
     HUMAN_REQUIRED = "human_required"
+
+    @classmethod
+    def alias_map(cls) -> dict[str, Self]:
+        return {
+            "continue": cls.CONTINUE_DEBATE,
+            "keep_going": cls.CONTINUE_DEBATE,
+            "next_round": cls.CONTINUE_DEBATE,
+            "finalise": cls.FINALIZE,
+            "stop": cls.FINALIZE,
+            "select_winner": cls.FINALIZE,
+            "declare_winner": cls.FINALIZE,
+            "revision": cls.REQUEST_REVISION,
+            "targeted_revision": cls.REQUEST_REVISION,
+            "revise": cls.REQUEST_REVISION,
+            "human": cls.HUMAN_REQUIRED,
+            "needs_human": cls.HUMAN_REQUIRED,
+            "escalate_to_human": cls.HUMAN_REQUIRED,
+        }
+
+    @classmethod
+    def heuristic_match(cls, normalized: str) -> Self | None:
+        if "human" in normalized:
+            return cls.HUMAN_REQUIRED
+        if "revision" in normalized or "revise" in normalized:
+            return cls.REQUEST_REVISION
+        if "final" in normalized or "winner" in normalized or "stop" in normalized:
+            return cls.FINALIZE
+        if "continue" in normalized or "next" in normalized or "debate" in normalized:
+            return cls.CONTINUE_DEBATE
+        return None
 
 
 class VerdictType(StrEnum):
@@ -220,6 +343,7 @@ class AgentConfig(BaseModel):
     system_prompt: str | None = None
     provider: ProviderConfig
     persona_id: str | None = None
+    persona_name: str | None = None
     persona_content: str | None = None
 
     @field_validator("agent_id", "display_name", mode="before")
@@ -229,6 +353,35 @@ class AgentConfig(BaseModel):
         if not normalized:
             raise ValueError("Agent identity fields must be non-empty.")
         return normalized
+
+    @field_validator(
+        "specialty", "system_prompt", "persona_id", "persona_name", "persona_content", mode="before"
+    )
+    @classmethod
+    def _normalize_optional_text(cls, value: object) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @computed_field
+    @property
+    def persona_label(self) -> str | None:
+        if self.persona_name:
+            return self.persona_name
+        if not self.persona_id:
+            return None
+        if self.persona_id == "__custom__":
+            return "Custom Persona"
+        return humanize_identifier(self.persona_id)
+
+    @computed_field
+    @property
+    def display_label(self) -> str:
+        persona_label = self.persona_label
+        if not persona_label:
+            return self.display_name
+        if persona_label.lower() in self.display_name.lower():
+            return self.display_name
+        return f"{self.display_name} [{persona_label}]"
 
 
 class TaskSpec(BaseModel):

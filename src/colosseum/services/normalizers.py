@@ -26,6 +26,11 @@ SECTION_PATTERNS = {
 
 
 class ResponseNormalizer:
+    def _agent_display_name(self, agent: AgentConfig) -> str:
+        display_label = getattr(agent, "display_label", None)
+        display_name = getattr(agent, "display_name", None)
+        return str(display_label or display_name or getattr(agent, "agent_id", "Unknown"))
+
     def normalize_plan(
         self,
         agent: AgentConfig,
@@ -33,10 +38,11 @@ class ResponseNormalizer:
         raw_content: str,
         usage: UsageMetrics,
     ) -> PlanDocument:
+        display_name = self._agent_display_name(agent)
         if payload:
             return PlanDocument(
                 agent_id=agent.agent_id,
-                display_name=agent.display_name,
+                display_name=display_name,
                 summary=payload.get("summary", raw_content[:300] or "No summary provided."),
                 evidence_basis=self._normalize_list(payload.get("evidence_basis")),
                 assumptions=self._normalize_list(payload.get("assumptions")),
@@ -56,7 +62,7 @@ class ResponseNormalizer:
         sections = self._extract_sections(raw_content)
         return PlanDocument(
             agent_id=agent.agent_id,
-            display_name=agent.display_name,
+            display_name=display_name,
             summary=raw_content[:300] or "No summary provided.",
             evidence_basis=sections["evidence_basis"],
             assumptions=sections["assumptions"],

@@ -43,6 +43,7 @@ from colosseum.core.models import (
     RunCreateRequest,
     TaskSpec,
     TaskType,
+    humanize_identifier,
 )
 from colosseum.services.local_runtime import LocalRuntimeService
 
@@ -574,6 +575,43 @@ def cmd_personas(_args: argparse.Namespace) -> None:
         print(
             f"    [{source_tag}] {BOLD}{p['persona_id']}{RST}  {DIM}{p.get('description', '')}{RST}"
         )
+
+
+def _obj_value(obj, key: str):
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _persona_label(obj) -> str:
+    persona_label = _obj_value(obj, "persona_label")
+    if persona_label:
+        return str(persona_label)
+    persona_name = _obj_value(obj, "persona_name")
+    if persona_name:
+        return str(persona_name)
+    persona_id = str(_obj_value(obj, "persona_id") or "").strip()
+    if not persona_id:
+        return ""
+    if persona_id == "__custom__":
+        return "Custom Persona"
+    return humanize_identifier(persona_id)
+
+
+def _display_label(obj) -> str:
+    display_label = _obj_value(obj, "display_label")
+    if display_label:
+        return str(display_label)
+    display_name = str(_obj_value(obj, "display_name") or _obj_value(obj, "agent_id") or "?")
+    persona = _persona_label(obj)
+    if not persona or persona.lower() in display_name.lower():
+        return display_name
+    return f"{display_name} [{persona}]"
+
+
+def _plan_display_label(run: ExperimentRun, plan) -> str:
+    agent = next((item for item in run.agents if item.agent_id == plan.agent_id), None)
+    return _display_label(agent) if agent else plan.display_name
     print()
 
 
@@ -634,7 +672,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         scores = {e.plan_id: e.overall_score for e in (run.plan_evaluations or [])}
         for p in run.plans:
             score = scores.get(p.plan_id, 0.0)
-            print(f"    {BOLD}{p.display_name}{RST}  score={score:.2f}")
+            print(f"    {BOLD}{_plan_display_label(run, p)}{RST}  score={score:.2f}")
             print(_wrap(p.summary, indent=6))
         print()
 
@@ -669,7 +707,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         print(f"\n  {DIM}Token usage:{RST}")
         for actor_id, usage in run.budget_ledger.by_actor.items():
             agent = next((a for a in run.agents if a.agent_id == actor_id), None)
-            name = agent.display_name if agent else actor_id
+            name = _display_label(agent) if agent else actor_id
             print(f"    {DIM}{name}: {usage.total_tokens} tok{RST}")
     print()
 
@@ -1192,10 +1230,11 @@ def cmd_debate(args: argparse.Namespace) -> None:
             from colosseum.personas.loader import PersonaLoader
 
             loader = PersonaLoader()
-            content = loader.load_persona(persona_specs[i])
-            if content:
-                agent["persona_id"] = persona_specs[i]
-                agent["persona_content"] = content
+            persona = loader.registry.get_persona(persona_specs[i])
+            if persona:
+                agent["persona_id"] = persona.persona_id
+                agent["persona_name"] = persona.name
+                agent["persona_content"] = persona.content
             else:
                 print(f"  {GOLD}Warning: persona '{persona_specs[i]}' not found, skipping.{RST}")
 
@@ -1225,7 +1264,6 @@ def cmd_debate(args: argparse.Namespace) -> None:
         print(f"  {BOLD}Judge Policy:{RST} {evidence_policy_label}")
         print(f"  {BOLD}Gladiators:{RST}")
         for a in agents:
-            persona_tag = f" [{a.get('persona_id', '')}]" if a.get("persona_id") else ""
             tier_tag = ""
             m = _MODEL_MAP.get(
                 f"{a['provider']['type'].replace('_cli', '')}:{a['provider']['model']}"
@@ -1237,7 +1275,7 @@ def cmd_debate(args: argparse.Namespace) -> None:
                 )
             else:
                 tier_tag = f" {DIM}({'free' if m['tier'] == 'free' else 'subscription'}){RST}"
-            print(f"    {GOLD}{a['display_name']}{RST}{DIM}{persona_tag}{RST}{tier_tag}")
+            print(f"    {GOLD}{_display_label(a)}{RST}{tier_tag}")
         print()
 
     # Build request
@@ -1290,7 +1328,7 @@ def cmd_debate(args: argparse.Namespace) -> None:
             "status": run.status.value,
             "topic": run.task.title,
             "agents": [
-                {"agent_id": a.agent_id, "display_name": a.display_name} for a in run.agents
+                {"agent_id": a.agent_id, "display_name": a.display_label} for a in run.agents
             ],
             "plans": [
                 {
@@ -1381,7 +1419,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
             "token_budget": run.budget_policy.total_token_budget,
             "max_rounds": run.budget_policy.max_rounds,
             "agents": [
-                {"agent_id": a.agent_id, "display_name": a.display_name} for a in run.agents
+                {"agent_id": a.agent_id, "display_name": a.display_label} for a in run.agents
             ],
         },
     )
@@ -1422,7 +1460,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
             plan = next((p for p in run.plans if p.plan_id == ev.plan_id), None)
             scores[ev.plan_id] = {
                 "agent_id": plan.agent_id if plan else "",
-                "display_name": plan.display_name if plan else ev.plan_id[:8],
+                "display_name": _plan_display_label(run, plan) if plan else ev.plan_id[:8],
                 "score": ev.overall_score,
             }
         bus.emit("plan_scores", {"scores": scores})
@@ -1432,7 +1470,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
             print(f"\n  {BOLD}Plan Evaluations:{RST}")
             for ev in run.plan_evaluations:
                 plan = next((p for p in run.plans if p.plan_id == ev.plan_id), None)
-                name = plan.display_name if plan else ev.plan_id[:8]
+                name = _plan_display_label(run, plan) if plan else ev.plan_id[:8]
                 bar = _score_bar(ev.overall_score)
                 print(f"    {name}: {bar} {ev.overall_score:.2f}")
             print()
@@ -1563,7 +1601,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
         winner_names = []
         for wid in run.verdict.winning_plan_ids if run.verdict else []:
             plan = next((p for p in run.plans if p.plan_id == wid), None)
-            winner_names.append(plan.display_name if plan else wid[:8])
+            winner_names.append(_plan_display_label(run, plan) if plan else wid[:8])
         bus.emit(
             "verdict",
             {
@@ -1705,7 +1743,7 @@ def _verdict(run):
     winner_names = []
     for wid in v.winning_plan_ids:
         plan = next((p for p in run.plans if p.plan_id == wid), None)
-        winner_names.append(plan.display_name if plan else wid[:8])
+        winner_names.append(_plan_display_label(run, plan) if plan else wid[:8])
 
     print(f"  {color}{BOLD}  VERDICT: {vtype} — {' & '.join(winner_names)}{RST}")
     print(f"  {'=' * 60}")
@@ -1724,7 +1762,7 @@ def _verdict(run):
         print(f"\n    {DIM}Token usage:{RST}")
         for actor_id, usage in run.budget_ledger.by_actor.items():
             agent = next((a for a in run.agents if a.agent_id == actor_id), None)
-            name = agent.display_name if agent else actor_id
+            name = _display_label(agent) if agent else actor_id
             print(f"      {DIM}{name}: {usage.total_tokens} tok{RST}")
 
     total_tok = run.budget_ledger.total.total_tokens

@@ -25,6 +25,10 @@ from colosseum.services.budget import BudgetManager
 from colosseum.services.context_media import extract_image_inputs, summarize_image_inputs
 from colosseum.services.normalizers import ResponseNormalizer
 from colosseum.services.provider_runtime import ProviderRuntimeService
+from colosseum.services.prompt_contracts import (
+    DEBATE_BEHAVIOR_GUARDRAIL,
+    DEBATE_HONESTY_GUARDRAIL,
+)
 from colosseum.personas.prompting import (
     build_persona_expression_requirement,
     build_persona_prefix,
@@ -76,7 +80,7 @@ class DebateEngine:
                 self.provider_runtime.execute(
                     run=run,
                     actor_id=agent.agent_id,
-                    actor_label=agent.display_name,
+                    actor_label=agent.display_label,
                     provider_config=agent.provider,
                     operation="debate",
                     instructions=prompt,
@@ -199,7 +203,7 @@ class DebateEngine:
                 execution = await self.provider_runtime.execute(
                     run=run,
                     actor_id=a.agent_id,
-                    actor_label=a.display_name,
+                    actor_label=a.display_label,
                     provider_config=a.provider,
                     operation="debate",
                     instructions=p,
@@ -235,7 +239,7 @@ class DebateEngine:
                 "agent_thinking",
                 {
                     "agent_id": agent.agent_id,
-                    "display_name": agent.display_name,
+                    "display_name": agent.display_label,
                     "round_index": round_index,
                 },
             )
@@ -341,7 +345,7 @@ class DebateEngine:
                         "agent_message",
                         {
                             "agent_id": agent_result.agent_id,
-                            "display_name": agent_result.display_name,
+                            "display_name": agent_result.display_label,
                             "content": message.content,
                             "critique_count": len(message.critique_points),
                             "defense_count": len(message.defense_points),
@@ -469,7 +473,7 @@ class DebateEngine:
                     f"Judge question: {agenda.question}",
                     f"Why this issue matters now: {agenda.why_it_matters or 'The judge selected this as the next issue to resolve.'}",
                     "Structure your answer around the judge question first. Then explicitly state which peer points "
-                    "you reject, which peer points you accept, and what the judge should adopt from your argument.",
+                    "you reject, which peer points you accept, and which specific claim from your side you believe survives scrutiny best.",
                 ]
             )
 
@@ -492,7 +496,8 @@ class DebateEngine:
                 "concede points that are well-supported, and propose alternatives where appropriate. "
                 "Do NOT simply restate your own position — engage with what others have said. "
                 "Evidence quality matters more than rhetorical force: cite the frozen bundle or state uncertainty explicitly. "
-                "Unsupported claims reduce judge confidence.",
+                "Unsupported claims reduce judge confidence. "
+                f"{DEBATE_BEHAVIOR_GUARDRAIL} {DEBATE_HONESTY_GUARDRAIL}",
                 build_persona_expression_requirement(
                     "debate response, including content, critique points, defense points, and concessions"
                 ),

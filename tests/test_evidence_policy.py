@@ -89,6 +89,69 @@ def test_plan_normalizer_preserves_evidence_basis():
     assert plan.evidence_basis == ["Frozen repo snapshot", "Shared architecture note"]
 
 
+def test_agent_display_label_includes_persona_name_or_humanized_id():
+    named = AgentConfig(
+        agent_id="agent-a",
+        display_name="Gemini (2.5 Pro)",
+        provider=ProviderConfig(type=ProviderType.GEMINI_CLI, model="gemini-2.5-pro"),
+        persona_id="andrej_karpathy",
+        persona_name="Andrej Karpathy",
+    )
+    inferred = AgentConfig(
+        agent_id="agent-b",
+        display_name="Claude (Sonnet 4.6)",
+        provider=ProviderConfig(type=ProviderType.CLAUDE_CLI, model="claude-sonnet-4-6"),
+        persona_id="startup_cto",
+    )
+
+    assert named.persona_label == "Andrej Karpathy"
+    assert named.display_label == "Gemini (2.5 Pro) [Andrej Karpathy]"
+    assert inferred.persona_label == "Startup Cto"
+    assert inferred.display_label == "Claude (Sonnet 4.6) [Startup Cto]"
+
+
+def test_plan_normalizer_uses_agent_display_label():
+    normalizer = ResponseNormalizer()
+    agent = AgentConfig(
+        agent_id="agent-a",
+        display_name="OpenAI (GPT-5.4)",
+        provider=ProviderConfig(type=ProviderType.CODEX_CLI, model="gpt-5.4"),
+        persona_id="serena_williams",
+        persona_name="Serena Williams",
+    )
+
+    plan = normalizer.normalize_plan(
+        agent=agent,
+        payload={"summary": "Use staged rollout."},
+        raw_content="unused",
+        usage=UsageMetrics(),
+    )
+
+    assert plan.display_name == "OpenAI (GPT-5.4) [Serena Williams]"
+
+
+def test_round_type_coerce_handles_provider_aliases():
+    assert (
+        RoundType.coerce("initial_evidence_gathering", fallback=RoundType.REBUTTAL)
+        == RoundType.CRITIQUE
+    )
+    assert (
+        RoundType.coerce("round final comparison", fallback=RoundType.CRITIQUE)
+        == RoundType.FINAL_COMPARISON
+    )
+
+
+def test_judge_action_type_coerce_handles_provider_aliases():
+    assert (
+        JudgeActionType.coerce("select_winner", fallback=JudgeActionType.CONTINUE_DEBATE)
+        == JudgeActionType.FINALIZE
+    )
+    assert (
+        JudgeActionType.coerce("needs_human", fallback=JudgeActionType.CONTINUE_DEBATE)
+        == JudgeActionType.HUMAN_REQUIRED
+    )
+
+
 def test_automated_judge_does_not_early_finalize_when_evidence_is_thin(tmp_path):
     judge = build_judge(tmp_path)
     run = ExperimentRun(
@@ -384,6 +447,57 @@ def test_ai_judge_invalid_next_round_type_falls_back_to_supported_round(tmp_path
     assert decision.next_round_type == RoundType.CRITIQUE
 
 
+def test_ai_judge_alias_action_is_normalized_to_supported_enum(tmp_path, monkeypatch):
+    judge = build_judge(tmp_path)
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="AI judge action alias", problem_statement="Use a safe action."),
+        agents=[],
+        judge=JudgeConfig(
+            mode=JudgeMode.AI,
+            provider=ProviderConfig(type=ProviderType.MOCK, model="mock-judge"),
+        ),
+        plans=[
+            PlanDocument(
+                agent_id="a",
+                display_name="Plan A",
+                summary="Plan A",
+                evidence_basis=["Shared repo snapshot"],
+            ),
+            PlanDocument(
+                agent_id="b",
+                display_name="Plan B",
+                summary="Plan B",
+                evidence_basis=["Shared repo snapshot"],
+            ),
+        ],
+    )
+
+    async def fake_execute(**kwargs):
+        return ProviderExecution(
+            result=ProviderResult(
+                content="alias action",
+                json_payload={
+                    "action": "select_winner",
+                    "confidence": 0.82,
+                    "reasoning": "One plan clearly wins.",
+                    "disagreement_level": 0.2,
+                    "expected_value_of_next_round": 0.0,
+                    "next_round_type": "initial_evidence_gathering",
+                    "focus_areas": ["winner selection"],
+                },
+            ),
+            effective_provider=run.judge.provider,
+        )
+
+    monkeypatch.setattr(judge.provider_runtime, "execute", fake_execute)
+
+    decision = asyncio.run(judge._ai_decide(run))
+
+    assert decision.action == JudgeActionType.FINALIZE
+    assert decision.next_round_type == RoundType.CRITIQUE
+
+
 def test_ai_judge_prompt_uses_debate_record_without_search_metadata(tmp_path, monkeypatch):
     judge = build_judge(tmp_path)
     run = ExperimentRun(
@@ -582,3 +696,40 @@ def test_debate_prompt_reinforces_persona_voice(tmp_path):
     assert "VOICE CONTRACT" in prompt
     assert "PERSONA EXPRESSION" in prompt
     assert "critique points, defense points, and concessions" in prompt
+
+
+def test_debate_prompt_bans_judge_flattery_and_lies(tmp_path):
+    orchestrator = build_orchestrator(tmp_path)
+    agent_a = AgentConfig(
+        agent_id="agent-a",
+        display_name="Agent A",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-a"),
+    )
+    agent_b = AgentConfig(
+        agent_id="agent-b",
+        display_name="Agent B",
+        provider=ProviderConfig(type=ProviderType.MOCK, model="mock-b"),
+    )
+    run = ExperimentRun(
+        project_name="Colosseum",
+        task=TaskSpec(title="Prompt guardrail", problem_statement="Debate honestly."),
+        agents=[agent_a, agent_b],
+        judge=JudgeConfig(mode=JudgeMode.AUTOMATED),
+        plans=[
+            PlanDocument(agent_id="agent-a", display_name="Plan A", summary="Plan A"),
+            PlanDocument(agent_id="agent-b", display_name="Plan B", summary="Plan B"),
+        ],
+    )
+
+    prompt = orchestrator.debate_engine._build_prompt(
+        run,
+        agent_a,
+        RoundType.CRITIQUE,
+        agenda=None,
+        instructions=None,
+        image_summary="",
+        has_image_inputs=False,
+    )
+
+    assert "Do not flatter the judge" in prompt
+    assert "Do not lie, invent evidence, fake consensus" in prompt

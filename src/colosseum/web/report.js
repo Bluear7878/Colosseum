@@ -57,6 +57,34 @@ function list(items) {
   }).join("") + "</ul>";
 }
 
+function humanizePersonaId(personaId) {
+  var cleaned = String(personaId || "").replace(/^_+|_+$/g, "").replace(/[_-]+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.replace(/\b[a-z]/g, function(ch) { return ch.toUpperCase(); });
+}
+
+function agentPersonaLabel(agent) {
+  if (!agent) return "";
+  if (agent.persona_label) return agent.persona_label;
+  if (agent.persona_name) return agent.persona_name;
+  if (agent.persona_id === "__custom__") return "Custom Persona";
+  return humanizePersonaId(agent.persona_id);
+}
+
+function agentDisplayLabel(agent) {
+  if (!agent) return "";
+  if (agent.display_label) return agent.display_label;
+  var base = agent.display_name || agent.agent_id || "";
+  var persona = agentPersonaLabel(agent);
+  if (!persona || base.toLowerCase().indexOf(persona.toLowerCase()) !== -1) return base;
+  return base + " [" + persona + "]";
+}
+
+function planDisplayLabel(run, plan) {
+  var agent = (run.agents || []).find(function(item) { return item.agent_id === plan.agent_id; }) || null;
+  return agent ? agentDisplayLabel(agent) : (plan.display_name || plan.agent_id || "");
+}
+
 function claimList(title, claims, className) {
   if (!claims || !claims.length) return "";
   return '<div class="report-claim-group ' + esc(className || "") + '">' +
@@ -180,7 +208,7 @@ function winnerDisplayNames(run) {
   if (!verdict || !verdict.winning_plan_ids || !verdict.winning_plan_ids.length) return [];
   return verdict.winning_plan_ids.map(function(wid) {
     var match = (run.plans || []).find(function(p) { return p.plan_id === wid; });
-    return match ? match.display_name : wid.slice(0, 8);
+    return match ? planDisplayLabel(run, match) : wid.slice(0, 8);
   }).filter(Boolean);
 }
 
@@ -339,7 +367,7 @@ function renderAgentOpinions(run) {
 
     return '<div class="agent-opinion-card' + (isWinner ? ' agent-opinion-winner' : '') + '">' +
       '<div class="agent-opinion-head">' +
-        '<span class="agent-badge">' + esc(agent.display_name) + '</span>' +
+        '<span class="agent-badge">' + esc(agentDisplayLabel(agent)) + '</span>' +
         (isWinner ? '<span class="winner-crown">👑 Winner</span>' : '') +
       '</div>' +
       adoptedHtml +
@@ -390,7 +418,7 @@ function renderPlans(run) {
   el.innerHTML = run.plans.map(function(plan) {
     return '<article class="plan-card report-plan-card">' +
       '<div class="report-plan-head">' +
-        '<h3>' + esc(plan.display_name) + '</h3>' +
+        '<h3>' + esc(planDisplayLabel(run, plan)) + '</h3>' +
         '<span class="plan-score">Score ' + fmt(scores[plan.plan_id]) + '</span>' +
       '</div>' +
       '<p>' + esc(plan.summary || "") + '</p>' +
@@ -412,7 +440,7 @@ function renderTimeline(run) {
 
   var agentNames = {};
   (run.agents || []).forEach(function(agent) {
-    agentNames[agent.agent_id] = agent.display_name;
+    agentNames[agent.agent_id] = agentDisplayLabel(agent);
   });
 
   el.innerHTML = run.debate_rounds.map(function(round) {

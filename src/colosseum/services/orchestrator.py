@@ -186,7 +186,7 @@ class ColosseumOrchestrator:
                 self.provider_runtime.execute(
                     run=run,
                     actor_id=agent.agent_id,
-                    actor_label=agent.display_name,
+                    actor_label=agent.display_label,
                     provider_config=agent.provider,
                     operation="plan",
                     instructions=prompt,
@@ -248,7 +248,7 @@ class ColosseumOrchestrator:
                 execution = await self.provider_runtime.execute(
                     run=run,
                     actor_id=a.agent_id,
-                    actor_label=a.display_name,
+                    actor_label=a.display_label,
                     provider_config=a.provider,
                     operation="plan",
                     instructions=p,
@@ -271,7 +271,7 @@ class ColosseumOrchestrator:
             task_to_agent[task] = agent
             yield (
                 "agent_planning",
-                {"agent_id": agent.agent_id, "display_name": agent.display_name},
+                {"agent_id": agent.agent_id, "display_name": agent.display_label},
             )
 
         pending: set[asyncio.Task] = set(task_to_agent.keys())
@@ -308,7 +308,7 @@ class ColosseumOrchestrator:
                         "plan_failed",
                         {
                             "agent_id": agent.agent_id,
-                            "display_name": agent.display_name,
+                            "display_name": agent.display_label,
                             "error": str(exc),
                         },
                     )

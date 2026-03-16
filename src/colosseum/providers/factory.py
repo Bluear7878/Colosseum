@@ -34,12 +34,14 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
     runtime_env = LocalRuntimeService().provider_env()
     if config.type == ProviderType.MOCK:
         return MockProvider(model_name=config.model)
+    pricing = config.pricing if config.pricing.prompt_cost_per_1k_tokens > 0 else None
     if config.type == ProviderType.COMMAND:
         return CommandProvider(
             model_name=config.model,
             command=config.command,
             env=config.env,
             timeout_seconds=_timeout(config, 300),
+            pricing=pricing,
         )
     if config.type == ProviderType.CLAUDE_CLI:
         model = config.model or "claude-sonnet-4-6"
@@ -49,6 +51,7 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "claude", "--model", model],
             env=config.env,
             timeout_seconds=_timeout(config, 300),
+            pricing=pricing,
         )
     if config.type == ProviderType.CODEX_CLI:
         model = config.model or "o3"
@@ -58,6 +61,7 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "codex", "--model", model],
             env=config.env,
             timeout_seconds=_timeout(config, 300),
+            pricing=pricing,
         )
     if config.type == ProviderType.GEMINI_CLI:
         model = config.model or "gemini-2.5-pro"
@@ -67,6 +71,7 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "gemini", "--model", model],
             env=config.env,
             timeout_seconds=_timeout(config, 300),
+            pricing=pricing,
         )
     if config.type == ProviderType.OLLAMA:
         ollama_model = config.ollama_model or _strip_provider_prefix(config.model) or "llama3.3"
@@ -76,6 +81,7 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "ollama", "--model", ollama_model],
             env={**runtime_env, **config.env},
             timeout_seconds=_timeout(config, 600),
+            pricing=pricing,
         )
     if config.type == ProviderType.HUGGINGFACE_LOCAL:
         hf_model = (
@@ -90,5 +96,6 @@ def build_provider(config: ProviderConfig) -> BaseProvider:
             or [sys.executable, WRAPPER_SCRIPT, "--provider", "huggingface", "--model", hf_model],
             env={**runtime_env, **config.env},
             timeout_seconds=_timeout(config, 600),
+            pricing=pricing,
         )
     raise ValueError(f"Unsupported provider type: {config.type}")

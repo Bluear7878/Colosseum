@@ -42,6 +42,7 @@ from colosseum.core.models import (
     JudgeMode,
     LocalRuntimeConfigUpdate,
     ProviderConfig,
+    ProviderPricing,
     RoundType,
     RunCreateRequest,
     RunStatus,
@@ -143,6 +144,23 @@ _FALLBACK_MODELS = [
     {"id": "ollama:gemma3", "name": "Gemma 3 4B", "type": "ollama", "tier": "free"},
     {"id": "ollama:deepseek-r1", "name": "DeepSeek R1 7B", "type": "ollama", "tier": "free"},
 ]
+
+# ── Model pricing (USD per 1K tokens: prompt, completion) ─────────────────────
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "claude-opus-4-6":               (0.015,     0.075),
+    "claude-sonnet-4-6":             (0.003,     0.015),
+    "claude-haiku-4-5-20251001":     (0.0008,    0.004),
+    "gpt-5.4":                       (0.0025,    0.010),
+    "gpt-5.3-codex":                 (0.0015,    0.006),
+    "o3":                            (0.002,     0.008),
+    "o4-mini":                       (0.0011,    0.0044),
+    "gemini-3.1-pro-preview":        (0.0025,    0.015),
+    "gemini-3-flash-preview":        (0.00015,   0.0006),
+    "gemini-3.1-flash-lite-preview": (0.000075,  0.0003),
+    "gemini-2.5-pro":                (0.00125,   0.010),
+    "gemini-2.5-flash":              (0.000075,  0.0003),
+    "gemini-2.5-flash-lite":         (0.0000375, 0.00015),
+}
 
 
 # ── Per-provider model probing ────────────────────────────────────
@@ -1187,6 +1205,12 @@ def _parse_provider_spec(spec: str) -> ProviderConfig:
     kwargs: dict = {"type": ptype, "model": model}
     if ptype in ("ollama", "huggingface_local"):
         kwargs["ollama_model"] = model
+    pricing = _MODEL_PRICING.get(model)
+    if pricing:
+        kwargs["pricing"] = ProviderPricing(
+            prompt_cost_per_1k_tokens=pricing[0],
+            completion_cost_per_1k_tokens=pricing[1],
+        )
     return ProviderConfig(**kwargs)
 
 
@@ -1890,12 +1914,15 @@ def _verdict(run):
         for actor_id, usage in run.budget_ledger.by_actor.items():
             agent = next((a for a in run.agents if a.agent_id == actor_id), None)
             name = _display_label(agent) if agent else actor_id
-            print(f"      {DIM}{name}: {usage.total_tokens} tok{RST}")
+            cost_str = f"  ${usage.estimated_cost_usd:.4f}" if usage.estimated_cost_usd > 0 else ""
+            print(f"      {DIM}{name}: {usage.total_tokens} tok{cost_str}{RST}")
 
     total_tok = run.budget_ledger.total.total_tokens
+    total_cost = run.budget_ledger.total.estimated_cost_usd
     budget_tok = run.budget_policy.total_token_budget
+    cost_summary = f"  Total cost: ${total_cost:.4f}" if total_cost > 0 else ""
     print(f"\n    {DIM}Confidence: {v.confidence:.2f}  Stop: {v.stop_reason}{RST}")
-    print(f"    {DIM}Total: {total_tok}/{budget_tok} tokens  Run ID: {run.run_id}{RST}\n")
+    print(f"    {DIM}Total: {total_tok}/{budget_tok} tokens{cost_summary}  Run ID: {run.run_id}{RST}\n")
 
 
 def _show_human_packet(run) -> None:

@@ -157,6 +157,10 @@ function renderHero(run) {
         '<div class="hero-metric"><span class="hero-metric-label">Agents</span><strong>' + (run.agents || []).length + '</strong></div>' +
         '<div class="hero-metric"><span class="hero-metric-label">Rounds</span><strong>' + (run.debate_rounds || []).length + '</strong></div>' +
         '<div class="hero-metric"><span class="hero-metric-label">Tokens</span><strong>' + (((run.budget_ledger || {}).total || {}).total_tokens || 0).toLocaleString() + '</strong></div>' +
+        (function() {
+          var cost = (((run.budget_ledger || {}).total || {}).estimated_cost_usd || 0);
+          return cost > 0 ? '<div class="hero-metric"><span class="hero-metric-label">Cost</span><strong>$' + cost.toFixed(4) + '</strong></div>' : '';
+        })() +
       '</div>' +
     '</div>';
 }
@@ -549,9 +553,11 @@ function renderUsage(run) {
     var usage = byActor[key] || {};
     var total = usage.total_tokens || 0;
     var pct = Math.round((total / maxTokens) * 100);
+    var costVal = usage.estimated_cost_usd || 0;
+    var costHtml = costVal > 0 ? '<div class="usage-card-cost">$' + costVal.toFixed(4) + '</div>' : '';
     return '<div class="usage-card">' +
       '<div class="usage-card-name">' + esc(labels[key] || key) + '</div>' +
-      '<div class="usage-card-total">' + total.toLocaleString() + '</div>' +
+      '<div class="usage-card-total">' + total.toLocaleString() + costHtml + '</div>' +
       '<div class="usage-card-detail">Prompt: ' + (usage.prompt_tokens || 0).toLocaleString() + '<br>Completion: ' + (usage.completion_tokens || 0).toLocaleString() + '</div>' +
       '<div class="usage-bar-wrap"><div class="usage-bar" style="width:' + pct + '%"></div></div>' +
     '</div>';

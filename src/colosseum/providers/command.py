@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from colosseum.core.models import UsageMetrics
+from colosseum.core.models import ProviderPricing, UsageMetrics
 from colosseum.providers.base import (
     BaseProvider,
     ProviderExecutionError,
@@ -36,11 +36,13 @@ class CommandProvider(BaseProvider):
         command: list[str],
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = 180,
+        pricing: ProviderPricing | None = None,
     ) -> None:
         self.model_name = model_name
         self.command = command
         self.env = env or {}
         self.timeout_seconds = timeout_seconds
+        self.pricing = pricing
 
     async def generate(
         self,
@@ -118,9 +120,18 @@ class CommandProvider(BaseProvider):
         error_text = str(parsed["json_payload"].get("error", "")) if parsed["json_payload"] else ""
         if self._looks_like_quota_error(f"{raw}\n{error_text}\n{stderr.decode('utf-8')}"):
             raise ProviderQuotaExceededError(error_text or raw or "Provider quota exhausted.")
+        prompt_tok = max(32, len(instructions) // 4)
+        completion_tok = max(32, len(raw) // 4)
+        cost = 0.0
+        if self.pricing:
+            cost = (
+                prompt_tok * self.pricing.prompt_cost_per_1k_tokens / 1000
+                + completion_tok * self.pricing.completion_cost_per_1k_tokens / 1000
+            )
         usage = UsageMetrics(
-            prompt_tokens=max(32, len(instructions) // 4),
-            completion_tokens=max(32, len(raw) // 4),
+            prompt_tokens=prompt_tok,
+            completion_tokens=completion_tok,
+            estimated_cost_usd=cost,
         )
         return ProviderResult(
             content=parsed["content"],

@@ -8,6 +8,8 @@ Usage:
     colosseum debate --topic "..." -g ...    Run a debate from the terminal
     colosseum debate --topic "..." --mock    Quick test with mock providers (free)
     colosseum debate --topic "..." --monitor Run with tmux monitor panel
+    colosseum review -t "..." -g ... --dir . Multi-phase code review
+    colosseum review -t "..." --mock --phases A B C
     colosseum monitor [run_id]               Open live monitor for an active debate
     colosseum models                         List available models
     colosseum local-runtime status           Inspect managed local-model runtime state
@@ -28,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import datetime, timezone
 
 from colosseum.core.config import DEPTH_PROFILES
@@ -42,6 +45,10 @@ from colosseum.core.models import (
     JudgeMode,
     LocalRuntimeConfigUpdate,
     ProviderConfig,
+    ProviderPricing,
+    ReviewCreateRequest,
+    ReviewPhase,
+    ReviewSeverity,
     RoundType,
     RunCreateRequest,
     RunStatus,
@@ -107,42 +114,49 @@ _PROVIDER_DISPLAY = {"claude": "Claude", "codex": "OpenAI", "gemini": "Gemini"}
 
 # ── Fallback model catalog (used when probing hasn't run yet) ──
 
-_FALLBACK_MODELS = [
-    {
-        "id": "claude:claude-opus-4-6",
-        "name": "Claude Opus 4.6",
-        "type": "claude_cli",
-        "tier": "paid",
-    },
-    {
-        "id": "claude:claude-sonnet-4-6",
-        "name": "Claude Sonnet 4.6",
-        "type": "claude_cli",
-        "tier": "paid",
-    },
-    {
-        "id": "claude:claude-haiku-4-5-20251001",
-        "name": "Claude Haiku 4.5",
-        "type": "claude_cli",
-        "tier": "paid",
-    },
-    {"id": "codex:gpt-5.4", "name": "GPT-5.4", "type": "codex_cli", "tier": "paid"},
-    {"id": "codex:gpt-5.3-codex", "name": "GPT-5.3 Codex", "type": "codex_cli", "tier": "paid"},
-    {"id": "gemini:gemini-2.5-pro", "name": "Gemini 2.5 Pro", "type": "gemini_cli", "tier": "paid"},
-    {
-        "id": "gemini:gemini-2.5-flash",
-        "name": "Gemini 2.5 Flash",
-        "type": "gemini_cli",
-        "tier": "paid",
-    },
+def _build_fallback_models() -> list[dict]:
+    """Build fallback model list from _CANDIDATE_MODELS to stay in sync."""
+    models: list[dict] = []
+    for provider, candidates in _CANDIDATE_MODELS.items():
+        provider_type = _PROVIDER_TYPE_MAP.get(provider, "command")
+        display_prefix = _PROVIDER_DISPLAY.get(provider, provider)
+        for c in candidates:
+            models.append({
+                "id": f"{provider}:{c['model']}",
+                "name": f"{display_prefix} {c['label']}",
+                "type": provider_type,
+                "tier": "paid",
+            })
     # Free (local via Ollama)
-    {"id": "ollama:llama3.3", "name": "Llama 3.3 70B", "type": "ollama", "tier": "free"},
-    {"id": "ollama:llama3.2", "name": "Llama 3.2 3B", "type": "ollama", "tier": "free"},
-    {"id": "ollama:mistral", "name": "Mistral 7B", "type": "ollama", "tier": "free"},
-    {"id": "ollama:qwen2.5", "name": "Qwen 2.5 7B", "type": "ollama", "tier": "free"},
-    {"id": "ollama:gemma3", "name": "Gemma 3 4B", "type": "ollama", "tier": "free"},
-    {"id": "ollama:deepseek-r1", "name": "DeepSeek R1 7B", "type": "ollama", "tier": "free"},
-]
+    models.extend([
+        {"id": "ollama:llama3.3", "name": "Llama 3.3 70B", "type": "ollama", "tier": "free"},
+        {"id": "ollama:llama3.2", "name": "Llama 3.2 3B", "type": "ollama", "tier": "free"},
+        {"id": "ollama:mistral", "name": "Mistral 7B", "type": "ollama", "tier": "free"},
+        {"id": "ollama:qwen2.5", "name": "Qwen 2.5 7B", "type": "ollama", "tier": "free"},
+        {"id": "ollama:gemma3", "name": "Gemma 3 4B", "type": "ollama", "tier": "free"},
+        {"id": "ollama:deepseek-r1", "name": "DeepSeek R1 7B", "type": "ollama", "tier": "free"},
+    ])
+    return models
+
+
+_FALLBACK_MODELS = _build_fallback_models()
+
+# ── Model pricing (USD per 1K tokens: prompt, completion) ─────────────────────
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "claude-opus-4-6":               (0.015,     0.075),
+    "claude-sonnet-4-6":             (0.003,     0.015),
+    "claude-haiku-4-5-20251001":     (0.0008,    0.004),
+    "gpt-5.4":                       (0.0025,    0.010),
+    "gpt-5.3-codex":                 (0.0015,    0.006),
+    "o3":                            (0.002,     0.008),
+    "o4-mini":                       (0.0011,    0.0044),
+    "gemini-3.1-pro-preview":        (0.0025,    0.015),
+    "gemini-3-flash-preview":        (0.00015,   0.0006),
+    "gemini-3.1-flash-lite-preview": (0.000075,  0.0003),
+    "gemini-2.5-pro":                (0.00125,   0.010),
+    "gemini-2.5-flash":              (0.000075,  0.0003),
+    "gemini-2.5-flash-lite":         (0.0000375, 0.00015),
+}
 
 
 # ── Per-provider model probing ────────────────────────────────────
@@ -488,18 +502,24 @@ def cmd_models(_args: argparse.Namespace) -> None:
     _print_header()
     print(f"  {BOLD}Available Gladiators{RST}\n")
 
+    models = discover_models()
+
     # Paid
     print(f"  {GOLD}Premium (CLI subscription){RST}")
-    for m in MODELS:
+    for m in models:
         if m["tier"] != "paid":
             continue
-        avail = shutil.which(m["id"].split(":")[0]) is not None
+        cli_name = m["id"].split(":")[0]
+        if cli_name == "codex":
+            avail = shutil.which("codex") is not None
+        else:
+            avail = shutil.which(cli_name) is not None
         mark = f"{GREEN}+{RST}" if avail else f"{RED}x{RST}"
         print(f"    {mark} {BOLD}{m['id']}{RST}  {DIM}{m['name']}{RST}")
 
     # Free
     print(f"\n  {CYAN}Open-Source (Local){RST}")
-    for m in MODELS:
+    for m in models:
         if m["tier"] != "free":
             continue
         avail = shutil.which("ollama") is not None
@@ -1187,6 +1207,12 @@ def _parse_provider_spec(spec: str) -> ProviderConfig:
     kwargs: dict = {"type": ptype, "model": model}
     if ptype in ("ollama", "huggingface_local"):
         kwargs["ollama_model"] = model
+    pricing = _MODEL_PRICING.get(model)
+    if pricing:
+        kwargs["pricing"] = ProviderPricing(
+            prompt_cost_per_1k_tokens=pricing[0],
+            completion_cost_per_1k_tokens=pricing[1],
+        )
     return ProviderConfig(**kwargs)
 
 
@@ -1537,14 +1563,23 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
         bus.emit(
             "phase", {"phase": "planning", "message": "Generating plans...", "status": "planning"}
         )
+        spinner = _Spinner()
+        pending_plans = 0
         run.status = RunStatus.PLANNING
         async for event_type, event_data in orch._generate_plans_streaming(run):
             bus.emit(event_type, event_data)
             if not silent:
                 if event_type == "agent_planning":
                     _agent_status(event_data["display_name"], "crafting strategy...")
+                    pending_plans += 1
+                    spinner.start("Generating plans...")
                 elif event_type == "plan_ready":
+                    spinner.stop()
+                    pending_plans -= 1
                     _agent_plan(event_data)
+                    if pending_plans > 0:
+                        spinner.start(f"Waiting for {pending_plans} more plan(s)...")
+        spinner.stop()
 
         run.plan_evaluations = orch.judge_service.evaluate_plans(
             run.plans,
@@ -1652,6 +1687,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
 
             run.status = RunStatus.DEBATING
             debate_round = None
+            pending_agents = 0
             async for event_type, event_data in orch.debate_engine.run_round_streaming(
                 run,
                 round_type=round_type,
@@ -1673,8 +1709,16 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
                             event_data["display_name"],
                             f"thinking... (Round {event_data['round_index']})",
                         )
+                        pending_agents += 1
+                        spinner.start(f"Round {round_idx} — agents debating...")
                     elif event_type == "agent_message":
+                        spinner.stop()
+                        pending_agents -= 1
                         _agent_message(event_data)
+                        if pending_agents > 0:
+                            spinner.start(f"Round {round_idx} — waiting for {pending_agents} more...")
+                    elif event_type == "round_complete":
+                        spinner.stop()
                 if event_type == "round_complete":
                     assert isinstance(event_data, DebateRound)
                     debate_round = event_data
@@ -1760,6 +1804,43 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
 # ── Terminal rendering helpers ───────────────────────────────────
 
 
+class _Spinner:
+    """Async progress spinner shown while models are generating."""
+
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task | None = None
+        self._active = False
+
+    async def _run(self, label: str) -> None:
+        start = time.monotonic()
+        i = 0
+        try:
+            while self._active:
+                elapsed = time.monotonic() - start
+                frame = self._FRAMES[i % len(self._FRAMES)]
+                sys.stdout.write(f"\r      {DIM}{frame} {label} ({elapsed:.0f}s){RST}  ")
+                sys.stdout.flush()
+                i += 1
+                await asyncio.sleep(0.15)
+        except asyncio.CancelledError:
+            pass
+
+    def start(self, label: str) -> None:
+        self.stop()
+        self._active = True
+        self._task = asyncio.create_task(self._run(label))
+
+    def stop(self) -> None:
+        self._active = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+        sys.stdout.write("\r" + " " * 72 + "\r")
+        sys.stdout.flush()
+
+
 def _phase(msg: str):
     print(f"  {GOLD}{BOLD}>> {msg}{RST}")
 
@@ -1807,11 +1888,11 @@ def _judge_decision(decision, rounds_done: int, max_rounds: int):
 def _agent_message(data: dict):
     name = data.get("display_name", data.get("agent_id", "?"))
     content = data.get("content", "")
-    preview = content[:200] + "..." if len(content) > 200 else content
+    preview = content[:500] + "..." if len(content) > 500 else content
     tokens = data.get("usage", {}).get("total_tokens", 0)
     novelty = data.get("novelty_score")
 
-    print(f"    {CYAN}{BOLD}{name}{RST}  {DIM}{tokens} tok{RST}")
+    print(f"\n    {CYAN}{BOLD}{name}{RST}  {DIM}{tokens} tok{RST}")
     print(_wrap(preview, indent=6))
 
     stats = []
@@ -1890,12 +1971,15 @@ def _verdict(run):
         for actor_id, usage in run.budget_ledger.by_actor.items():
             agent = next((a for a in run.agents if a.agent_id == actor_id), None)
             name = _display_label(agent) if agent else actor_id
-            print(f"      {DIM}{name}: {usage.total_tokens} tok{RST}")
+            cost_str = f"  ${usage.estimated_cost_usd:.4f}" if usage.estimated_cost_usd > 0 else ""
+            print(f"      {DIM}{name}: {usage.total_tokens} tok{cost_str}{RST}")
 
     total_tok = run.budget_ledger.total.total_tokens
+    total_cost = run.budget_ledger.total.estimated_cost_usd
     budget_tok = run.budget_policy.total_token_budget
+    cost_summary = f"  Total cost: ${total_cost:.4f}" if total_cost > 0 else ""
     print(f"\n    {DIM}Confidence: {v.confidence:.2f}  Stop: {v.stop_reason}{RST}")
-    print(f"    {DIM}Total: {total_tok}/{budget_tok} tokens  Run ID: {run.run_id}{RST}\n")
+    print(f"    {DIM}Total: {total_tok}/{budget_tok} tokens{cost_summary}  Run ID: {run.run_id}{RST}\n")
 
 
 def _show_human_packet(run) -> None:
@@ -2053,6 +2137,367 @@ def _prompt_human_judge(run) -> HumanJudgeActionRequest:
         print(f"  {RED}Invalid choice.{RST}")
 
 
+# ── Review command ────────────────────────────────────────────────
+
+_PHASE_LETTER_MAP = {
+    "A": ReviewPhase.PROJECT_RULES,
+    "B": ReviewPhase.IMPLEMENTATION,
+    "C": ReviewPhase.ARCHITECTURE,
+    "D": ReviewPhase.SECURITY_PERFORMANCE,
+    "E": ReviewPhase.TEST_COVERAGE,
+}
+
+_SEVERITY_COLORS = {
+    ReviewSeverity.CRITICAL: RED,
+    ReviewSeverity.HIGH: RED,
+    ReviewSeverity.MEDIUM: GOLD,
+    ReviewSeverity.LOW: CYAN,
+    ReviewSeverity.INFO: DIM,
+}
+
+
+def _review_phase_header(label: str, index: int, total: int):
+    print(f"\n  {GOLD}{BOLD}>> Phase {index}/{total}: {label}{RST}")
+
+
+def _review_finding(finding, indent: int = 6):
+    color = _SEVERITY_COLORS.get(finding.severity, DIM)
+    prefix = " " * indent
+    print(f"{prefix}{color}{BOLD}[{finding.severity.value.upper()}]{RST} {finding.title}")
+    if finding.description and finding.description != finding.title:
+        desc = finding.description[:200]
+        print(_wrap(desc, indent=indent + 2))
+    if finding.file_path:
+        loc = finding.file_path
+        if finding.line_range:
+            loc += f":{finding.line_range}"
+        print(f"{prefix}  {DIM}{loc}{RST}")
+    if finding.recommendation:
+        print(f"{prefix}  {GREEN}Fix:{RST} {finding.recommendation[:160]}")
+
+
+def _review_summary(report):
+    print(f"\n  {'=' * 60}")
+    print(f"  {GOLD}{BOLD}  CODE REVIEW COMPLETE{RST}")
+    print(f"  {'=' * 60}")
+
+    # Severity counts
+    counts = []
+    if report.critical_count:
+        counts.append(f"{RED}{BOLD}{report.critical_count} critical{RST}")
+    if report.high_count:
+        counts.append(f"{RED}{report.high_count} high{RST}")
+    if report.medium_count:
+        counts.append(f"{GOLD}{report.medium_count} medium{RST}")
+    if report.low_count:
+        counts.append(f"{CYAN}{report.low_count} low{RST}")
+    info_count = report.total_findings - report.critical_count - report.high_count - report.medium_count - report.low_count
+    if info_count > 0:
+        counts.append(f"{DIM}{info_count} info{RST}")
+
+    print(f"\n    {BOLD}Findings:{RST} {report.total_findings} total — {', '.join(counts)}")
+
+    if report.overall_summary:
+        print(f"\n    {BOLD}Summary:{RST}")
+        print(_wrap(report.overall_summary[:500], indent=6))
+
+    if report.top_recommendations:
+        print(f"\n    {BOLD}Top Recommendations:{RST}")
+        for i, rec in enumerate(report.top_recommendations[:5], 1):
+            print(f"      {GOLD}{i}.{RST} {rec[:160]}")
+
+    # Usage
+    total_tok = report.total_usage.total_tokens
+    total_cost = report.total_usage.estimated_cost_usd
+    cost_str = f"  ${total_cost:.4f}" if total_cost > 0 else ""
+    print(f"\n    {DIM}Tokens: {total_tok}{cost_str}  Phases: {len(report.phase_results)}{RST}")
+    print(f"    {DIM}Review ID: {report.review_id}{RST}\n")
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """Run a multi-phase code review from the terminal."""
+    from colosseum.bootstrap import get_review_orchestrator
+
+    target = args.topic
+    depth = args.depth
+    json_output = args.json_output
+    file_paths = getattr(args, "files", None) or []
+    dir_path = getattr(args, "dir", None)
+    diff_flag = getattr(args, "diff", False)
+    rules_path = getattr(args, "rules", None)
+    phase_letters = getattr(args, "phases", None)
+
+    # --mock flag
+    if args.mock:
+        gladiator_specs = ["mock:alpha", "mock:beta"]
+    else:
+        gladiator_specs = args.gladiators or []
+
+    if not json_output:
+        _print_header()
+
+    if len(gladiator_specs) < 2:
+        if json_output:
+            import json as _json
+            print(_json.dumps({"error": f"Need at least 2 gladiators. Got {len(gladiator_specs)}."}))
+        else:
+            print(f"  {RED}Need at least 2 gladiators. Use -g or --mock.{RST}\n")
+        sys.exit(1)
+
+    # Parse gladiators
+    agents = []
+    for i, spec in enumerate(gladiator_specs):
+        try:
+            agent = _parse_gladiator(spec)
+        except ValueError as e:
+            print(f"  {RED}{e}{RST}\n")
+            sys.exit(1)
+        existing_ids = [a["agent_id"] for a in agents]
+        if agent["agent_id"] in existing_ids:
+            agent["agent_id"] = f"{agent['agent_id']}_{i}"
+        agents.append(agent)
+
+    # Parse phases
+    if phase_letters:
+        phases = []
+        for letter in phase_letters:
+            upper = letter.upper()
+            if upper in _PHASE_LETTER_MAP:
+                phases.append(_PHASE_LETTER_MAP[upper])
+            else:
+                print(f"  {RED}Unknown phase '{letter}'. Use A, B, C, D, or E.{RST}\n")
+                sys.exit(1)
+    else:
+        phases = list(ReviewPhase)
+
+    # Git diff
+    git_diff = None
+    if diff_flag:
+        review_dir = dir_path or "."
+        try:
+            result = subprocess.run(
+                ["git", "diff", "HEAD~1"],
+                capture_output=True, text=True, timeout=30,
+                cwd=review_dir,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                git_diff = result.stdout
+        except Exception:
+            pass
+
+    # Rules context
+    rules_context = None
+    if rules_path:
+        try:
+            with open(rules_path, encoding="utf-8") as f:
+                rules_context = f.read()
+        except Exception as e:
+            print(f"  {GOLD}Warning: Could not read rules file: {e}{RST}")
+    elif dir_path:
+        # Auto-detect project rules
+        for candidate in ("CLAUDE.md", ".cursorrules", ".editorconfig", "pyproject.toml"):
+            try:
+                candidate_path = os.path.join(dir_path, candidate)
+                with open(candidate_path, encoding="utf-8") as f:
+                    content = f.read()
+                    if content.strip():
+                        rules_context = (rules_context or "") + f"\n--- {candidate} ---\n{content}\n"
+            except (FileNotFoundError, OSError):
+                pass
+
+    # Build context sources
+    context_sources: list[ContextSourceInput] = [
+        ContextSourceInput(
+            source_id="review_target",
+            kind=ContextSourceKind.INLINE_TEXT,
+            label="Review target",
+            content=target,
+        )
+    ]
+    if dir_path:
+        context_sources.append(
+            ContextSourceInput(
+                source_id="project_dir",
+                kind=ContextSourceKind.LOCAL_DIRECTORY,
+                label=os.path.basename(dir_path.rstrip("/\\")) or dir_path,
+                path=dir_path,
+            )
+        )
+    for i, fp in enumerate(file_paths):
+        context_sources.append(
+            ContextSourceInput(
+                source_id=f"file_{i}",
+                kind=ContextSourceKind.LOCAL_FILE,
+                label=os.path.basename(fp),
+                path=fp,
+            )
+        )
+    if git_diff:
+        context_sources.append(
+            ContextSourceInput(
+                source_id="git_diff",
+                kind=ContextSourceKind.INLINE_TEXT,
+                label="Git diff (HEAD~1)",
+                content=git_diff,
+            )
+        )
+
+    # Judge config
+    judge_spec = getattr(args, "judge", None)
+    if judge_spec:
+        try:
+            judge_provider = _parse_provider_spec(judge_spec)
+        except ValueError as e:
+            print(f"  {RED}{e}{RST}\n")
+            sys.exit(1)
+        judge_config = JudgeConfig(mode=JudgeMode.AI, provider=judge_provider)
+    else:
+        judge_config = JudgeConfig(mode=JudgeMode.AUTOMATED)
+
+    # Depth profile
+    profile = DEPTH_PROFILES.get(depth, DEPTH_PROFILES[3])
+
+    request = ReviewCreateRequest(
+        project_name="Colosseum",
+        target_description=target,
+        context_sources=context_sources,
+        agents=agents,
+        judge=judge_config,
+        budget_policy=BudgetPolicy(
+            max_rounds=depth,
+            min_rounds=profile["min_rounds"],
+            total_token_budget=profile.get("token_budget", 80000),
+            per_round_token_limit=12000,
+            per_agent_message_limit=1,
+            min_novelty_threshold=profile["min_novelty_threshold"],
+            convergence_threshold=profile["convergence_threshold"],
+        ),
+        phases=phases,
+        git_diff=git_diff,
+        rules_context=rules_context,
+    )
+
+    orch = get_review_orchestrator()
+
+    if json_output:
+        import json as _json
+        report = asyncio.run(orch.run_review(request))
+        print(_json.dumps(report.model_dump(mode="json"), indent=2, default=str))
+        return
+
+    # Print header
+    print(f"  {BOLD}Review:{RST} {target}")
+    print(f"  {BOLD}Phases:{RST} {len(phases)} — {', '.join(p.value for p in phases)}")
+    if dir_path:
+        print(f"  {BOLD}Dir:{RST} {dir_path}")
+    if file_paths:
+        print(f"  {BOLD}Files:{RST} {', '.join(file_paths)}")
+    if git_diff:
+        print(f"  {BOLD}Diff:{RST} included ({len(git_diff)} chars)")
+    if rules_context:
+        print(f"  {BOLD}Rules:{RST} loaded ({len(rules_context)} chars)")
+    print(f"  {BOLD}Gladiators:{RST}")
+    for a in agents:
+        print(f"    {GOLD}{_display_label(a)}{RST}")
+    print(f"\n  {DIM}{'─' * 60}{RST}")
+    print(f"  {GOLD}Code review begins...{RST}\n")
+
+    asyncio.run(_run_review_live(orch, request))
+
+
+async def _run_review_live(orch, request) -> None:
+    """Run review with live streaming output per phase."""
+    try:
+        review_complete_data = None
+        spinner = _Spinner()
+        pending_inner = 0
+        async for event_type, event_data in orch.run_review_streaming(request):
+            if event_type == "phase_start":
+                spinner.stop()
+                _review_phase_header(
+                    event_data["label"],
+                    event_data["index"],
+                    event_data["total"],
+                )
+            elif event_type == "inner_agent_planning":
+                pending_inner += 1
+                spinner.start(f"{event_data['display_name']} planning...")
+            elif event_type == "inner_plan_ready":
+                spinner.stop()
+                pending_inner -= 1
+                name = event_data.get("display_name", "?")
+                summary = event_data.get("summary", "")[:100]
+                print(f"      {GREEN}Plan:{RST} {BOLD}{name}{RST} — {DIM}{summary}{RST}")
+                if pending_inner > 0:
+                    spinner.start(f"Waiting for {pending_inner} more plan(s)...")
+            elif event_type == "inner_debate_round_start":
+                print(f"      {DIM}Round {event_data.get('round_index', '?')}: {event_data.get('round_type', '?')}{RST}")
+            elif event_type == "inner_agent_thinking":
+                pending_inner += 1
+                spinner.start(f"{event_data['display_name']} debating...")
+            elif event_type == "inner_agent_message":
+                spinner.stop()
+                pending_inner -= 1
+                name = event_data.get("display_name", "?")
+                tok = event_data.get("usage", {}).get("total_tokens", 0)
+                print(f"      {CYAN}{name}{RST} {DIM}{tok} tok{RST}")
+                if pending_inner > 0:
+                    spinner.start("Waiting for remaining agents...")
+            elif event_type == "inner_judge_decision":
+                spinner.stop()
+                action = event_data.get("action", "?")
+                conf = event_data.get("confidence", 0)
+                print(f"      {GOLD}[Judge]{RST} {action} {DIM}(conf={conf:.2f}){RST}")
+            elif event_type == "phase_complete":
+                spinner.stop()
+                pending_inner = 0
+                fc = event_data["findings_count"]
+                usage = event_data.get("usage", {})
+                tok = usage.get("total_tokens", 0)
+                cost = usage.get("estimated_cost_usd", 0)
+                cost_str = f"  ${cost:.4f}" if cost > 0 else ""
+                print(f"    {GREEN}Done:{RST} {fc} finding(s)  {DIM}{tok} tok{cost_str}{RST}")
+                if event_data.get("summary"):
+                    print(_wrap(event_data["summary"][:200], indent=6))
+            elif event_type == "phase_failed":
+                spinner.stop()
+                pending_inner = 0
+                print(f"    {RED}Failed:{RST} {event_data.get('error', 'unknown')}")
+            elif event_type == "review_complete":
+                spinner.stop()
+                review_complete_data = event_data
+
+        # Print final summary using the streaming report
+        if review_complete_data:
+            total = review_complete_data.get("total_findings", 0)
+            print(f"\n  {'=' * 60}")
+            print(f"  {GOLD}{BOLD}  CODE REVIEW COMPLETE{RST}")
+            print(f"  {'=' * 60}")
+
+            counts = []
+            for key, label, color in [
+                ("critical_count", "critical", RED),
+                ("high_count", "high", RED),
+                ("medium_count", "medium", GOLD),
+                ("low_count", "low", CYAN),
+            ]:
+                n = review_complete_data.get(key, 0)
+                if n:
+                    counts.append(f"{color}{n} {label}{RST}")
+            print(f"\n    {BOLD}Findings:{RST} {total} total — {', '.join(counts)}")
+
+            summary = review_complete_data.get("overall_summary", "")
+            if summary:
+                print(f"\n    {BOLD}Summary:{RST}")
+                print(_wrap(summary[:500], indent=6))
+            print()
+
+    except Exception as exc:
+        error_msg = str(exc) or type(exc).__name__
+        print(f"\n  {RED}Error: {error_msg}{RST}\n")
+        sys.exit(1)
+
+
 # ── Argument parser ──────────────────────────────────────────────
 
 
@@ -2070,6 +2515,8 @@ def build_parser() -> argparse.ArgumentParser:
           colosseum models
           colosseum local-runtime status
           colosseum personas
+          colosseum review -t "Auth impl review" -g claude:claude-sonnet-4-6 codex:o3 --dir . --phases A B C
+          colosseum review -t "Quick test" --mock --phases A
           colosseum check
           colosseum serve
         """),
@@ -2254,6 +2701,79 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run ID to monitor (default: latest active run)",
     )
 
+    # review
+    p_review = sub.add_parser("review", help="Run a multi-phase code review")
+    p_review.add_argument("-t", "--topic", required=True, help="Review target description")
+    p_review.add_argument(
+        "-g",
+        "--gladiators",
+        action="extend",
+        nargs="+",
+        default=None,
+        help="Reviewer specs: provider:model (e.g. -g claude:claude-sonnet-4-6 codex:o3)",
+    )
+    p_review.add_argument(
+        "-d",
+        "--depth",
+        type=int,
+        default=2,
+        choices=[1, 2, 3, 4, 5],
+        help="Depth per review phase (default: 2)",
+    )
+    p_review.add_argument(
+        "--dir",
+        default=None,
+        metavar="PATH",
+        help="Project directory to review",
+    )
+    p_review.add_argument(
+        "-f",
+        "--files",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help="Specific files to review",
+    )
+    p_review.add_argument(
+        "--diff",
+        action="store_true",
+        default=False,
+        help="Include git diff HEAD~1 as context",
+    )
+    p_review.add_argument(
+        "--rules",
+        default=None,
+        metavar="PATH",
+        help="Path to project rules file (auto-detected if --dir is set)",
+    )
+    p_review.add_argument(
+        "--phases",
+        nargs="+",
+        default=None,
+        metavar="PHASE",
+        help="Review phases to run: A (rules) B (impl) C (arch) D (security) E (tests). Default: all",
+    )
+    p_review.add_argument(
+        "-j",
+        "--judge",
+        default=None,
+        metavar="PROVIDER:MODEL",
+        help="AI judge spec (e.g. -j claude:claude-opus-4-6). Omit for automated.",
+    )
+    p_review.add_argument(
+        "--mock",
+        action="store_true",
+        default=False,
+        help="Quick test with mock providers",
+    )
+    p_review.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        default=False,
+        help="Output result as JSON",
+    )
+
     return parser
 
 
@@ -2277,6 +2797,7 @@ def main() -> None:
         "check": cmd_check,
         "debate": cmd_debate,
         "monitor": cmd_monitor,
+        "review": cmd_review,
     }
     fn = commands.get(args.command)
     if fn:

@@ -4,7 +4,9 @@ import asyncio
 
 from colosseum.core.models import (
     AgentConfig,
+    DebateRound,
     ExperimentRun,
+    FrozenContextBundle,
     HumanJudgeActionRequest,
     JudgeActionType,
     JudgeDecision,
@@ -82,6 +84,38 @@ class ColosseumOrchestrator:
                 self.repository.save_run(run)
                 return run
 
+            run = await self._run_until_complete(run)
+            return run
+        except Exception as exc:
+            run.fail(exc)
+            self.repository.save_run(run)
+            raise
+
+    async def create_run_with_bundle(
+        self, request: RunCreateRequest, bundle: FrozenContextBundle
+    ) -> ExperimentRun:
+        """Run lifecycle with a pre-frozen context bundle (skips context freeze)."""
+        self.provider_runtime.validate_agents_selectable(request.agents)
+        self._validate_judge_request(request)
+        run = ExperimentRun(
+            project_name=request.project_name,
+            encourage_internet_search=request.encourage_internet_search,
+            response_language=request.response_language,
+            task=request.task,
+            agents=request.agents,
+            judge=request.judge,
+            paid_provider_policy=request.paid_provider_policy,
+            budget_policy=request.budget_policy,
+        )
+        self.repository.save_run(run)
+        try:
+            run.mark_planning(bundle)
+            self.repository.save_run(run)
+            await self._generate_plans(run)
+            run.plan_evaluations = self.judge_service.evaluate_plans(
+                run.plans,
+                use_evidence_based_judging=run.judge.use_evidence_based_judging,
+            )
             run = await self._run_until_complete(run)
             return run
         except Exception as exc:
@@ -371,6 +405,130 @@ class ColosseumOrchestrator:
             debate_round.adjudication = self.judge_service.adjudicate_round(run, debate_round)
             run.append_debate_round(debate_round)
             self.repository.save_run(run)
+
+    async def _run_until_complete_streaming(self, run: ExperimentRun):
+        """Like _run_until_complete but yields (event_type, data) tuples."""
+        while True:
+            decision = await self.judge_service.decide(run)
+            run.judge_trace.append(decision)
+
+            yield (
+                "judge_decision",
+                {
+                    "action": decision.action.value,
+                    "confidence": decision.confidence,
+                    "reasoning": decision.reasoning[:200],
+                    "next_round_type": decision.next_round_type.value
+                    if decision.next_round_type
+                    else "",
+                },
+            )
+
+            if decision.action == JudgeActionType.FINALIZE:
+                verdict = await self.judge_service.finalize(run, decision)
+                final_report = await self.report_synthesizer.synthesize(
+                    run, verdict=verdict
+                )
+                run.complete(
+                    verdict=verdict,
+                    stop_reason=decision.reasoning,
+                    final_report=final_report,
+                )
+                self.repository.save_run(run)
+                return
+
+            if not self.budget_manager.can_start_round(
+                run.budget_policy,
+                run.budget_ledger,
+                len(run.debate_rounds) + 1,
+            ):
+                fallback_decision = JudgeDecision(
+                    mode=run.judge.mode,
+                    action=JudgeActionType.FINALIZE,
+                    reasoning="Budget exhausted — maximum rounds or token limit reached.",
+                    confidence=1.0,
+                    disagreement_level=0.0,
+                    expected_value_of_next_round=0.0,
+                    budget_pressure=1.0,
+                )
+                run.judge_trace.append(fallback_decision)
+                verdict = await self.judge_service.finalize(run, fallback_decision)
+                run.complete(
+                    verdict=verdict,
+                    stop_reason=run.budget_ledger.stop_reason
+                    or fallback_decision.reasoning,
+                )
+                self.repository.save_run(run)
+                return
+
+            round_type = decision.next_round_type or RoundType.CRITIQUE
+            round_index = len(run.debate_rounds) + 1
+            yield (
+                "debate_round_start",
+                {"round_index": round_index, "round_type": round_type.value},
+            )
+
+            run.mark_debating()
+            completed_round: DebateRound | None = None
+            async for event_type, event_data in self.debate_engine.run_round_streaming(
+                run,
+                round_type=round_type,
+                agenda=decision.agenda,
+                instructions="Focus on the current judge agenda only.",
+            ):
+                if event_type == "round_complete" and isinstance(event_data, DebateRound):
+                    completed_round = event_data
+                else:
+                    yield (event_type, event_data)
+
+            if completed_round is not None:
+                completed_round.adjudication = self.judge_service.adjudicate_round(
+                    run, completed_round
+                )
+                run.append_debate_round(completed_round)
+            self.repository.save_run(run)
+
+    async def create_run_with_bundle_streaming(
+        self, request: RunCreateRequest, bundle: FrozenContextBundle
+    ):
+        """Like create_run_with_bundle but yields (event_type, data) tuples.
+
+        The final yield is ``("_run_complete", run)`` so consumers can
+        retrieve the finished ExperimentRun.
+        """
+        self.provider_runtime.validate_agents_selectable(request.agents)
+        self._validate_judge_request(request)
+        run = ExperimentRun(
+            project_name=request.project_name,
+            encourage_internet_search=request.encourage_internet_search,
+            response_language=request.response_language,
+            task=request.task,
+            agents=request.agents,
+            judge=request.judge,
+            paid_provider_policy=request.paid_provider_policy,
+            budget_policy=request.budget_policy,
+        )
+        self.repository.save_run(run)
+        try:
+            run.mark_planning(bundle)
+            self.repository.save_run(run)
+
+            async for event in self._generate_plans_streaming(run):
+                yield event
+
+            run.plan_evaluations = self.judge_service.evaluate_plans(
+                run.plans,
+                use_evidence_based_judging=run.judge.use_evidence_based_judging,
+            )
+
+            async for event in self._run_until_complete_streaming(run):
+                yield event
+
+            yield ("_run_complete", run)
+        except Exception as exc:
+            run.fail(exc)
+            self.repository.save_run(run)
+            raise
 
     def _validate_judge_request(self, request: RunCreateRequest) -> None:
         if request.judge.mode == JudgeMode.AI:

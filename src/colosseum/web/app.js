@@ -28,8 +28,12 @@ var GLADIATORS = [
     id: "gemini", name: "Gemini", icon: "\uD83D\uDD31", tier: "paid",
     desc: "gemini --model <model> -p",
     variants: [
+      { model: "gemini-3.1-pro-preview", label: "3.1 Pro", type: "gemini_cli" },
+      { model: "gemini-3-flash-preview", label: "3 Flash", type: "gemini_cli" },
+      { model: "gemini-3.1-flash-lite-preview", label: "3.1 Flash Lite", type: "gemini_cli" },
       { model: "gemini-2.5-pro", label: "2.5 Pro", type: "gemini_cli" },
-      { model: "gemini-2.5-flash", label: "2.5 Flash", type: "gemini_cli" }
+      { model: "gemini-2.5-flash", label: "2.5 Flash", type: "gemini_cli" },
+      { model: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", type: "gemini_cli" }
     ]
   },
   // ─── Free / Local models (Ollama) ───

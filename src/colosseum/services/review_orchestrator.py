@@ -6,7 +6,7 @@ each as a mini-debate via ColosseumOrchestrator.
 
 from __future__ import annotations
 
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from colosseum.core.config import REVIEW_PHASE_CONFIG
 from colosseum.core.models import (
@@ -62,7 +62,7 @@ class ReviewOrchestrator:
 
     async def run_review_streaming(
         self, request: ReviewCreateRequest
-    ) -> AsyncIterator[tuple[str, dict]]:
+    ) -> AsyncIterator[tuple[str, Any]]:
         """Run review phases, yielding events for each phase."""
         bundle = self.orchestrator.context_service.freeze(request.context_sources)
         yield ("review_start", {"target": request.target_description, "phases": [p.value for p in request.phases]})
@@ -111,6 +111,7 @@ class ReviewOrchestrator:
             "low_count": report.low_count,
             "overall_summary": report.overall_summary,
         })
+        yield ("_review_report", report)
 
     def _build_phase_request(
         self, request: ReviewCreateRequest, phase: ReviewPhase

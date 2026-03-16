@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 ARTIFACT_ROOT = Path(".colosseum/runs")
+REVIEW_REPORT_ROOT = Path(".colosseum/reviews")
 STATE_ROOT = Path(".colosseum/state")
 PROVIDER_QUOTA_PATH = STATE_ROOT / "provider_quotas.json"
 LOCAL_RUNTIME_SETTINGS_PATH = STATE_ROOT / "local_runtime.json"

@@ -37,11 +37,14 @@ from colosseum.core.models import (
     ContextSourceKind,
     DebateRound,
     ExperimentRun,
+    HumanJudgeActionRequest,
     JudgeConfig,
     JudgeMode,
     LocalRuntimeConfigUpdate,
     ProviderConfig,
+    RoundType,
     RunCreateRequest,
+    RunStatus,
     TaskSpec,
     TaskType,
     humanize_identifier,
@@ -1356,7 +1359,13 @@ def cmd_debate(args: argparse.Namespace) -> None:
         )
 
     # Build judge config
-    if judge_spec:
+    if judge_spec and judge_spec.lower() == "human":
+        judge_config = JudgeConfig(
+            mode=JudgeMode.HUMAN,
+            minimum_confidence_to_stop=profile["minimum_confidence_to_stop"],
+            use_evidence_based_judging=use_evidence_based_judging,
+        )
+    elif judge_spec:
         try:
             judge_provider = _parse_provider_spec(judge_spec)
         except ValueError as e:
@@ -1445,9 +1454,9 @@ def cmd_debate(args: argparse.Namespace) -> None:
     print(f"  {DIM}{'─' * 60}{RST}")
     print(f"  {GOLD}The arena gates open...{RST}\n")
 
-    # Launch tmux monitor if requested
+    # Launch tmux monitor: auto when in tmux, or when --monitor is passed
     _monitor_launched = False
-    if use_monitor:
+    if use_monitor or os.environ.get("TMUX"):
         # We need to pre-create the run to know the run_id for the monitor.
         # Create a temporary ExperimentRun to get the ID, then pass it through.
         from colosseum.core.models import ExperimentRun as _ER
@@ -1482,8 +1491,6 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
     from colosseum.core.models import (
         ExperimentRun,
         JudgeActionType,
-        RoundType,
-        RunStatus,
     )
     from colosseum.services.event_bus import DebateEventBus
 
@@ -1564,6 +1571,31 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
                 bar = _score_bar(ev.overall_score)
                 print(f"    {name}: {bar} {ev.overall_score:.2f}")
             print()
+
+        # === Human Judge Mode ===
+        if run.judge.mode == JudgeMode.HUMAN:
+            run.pause_for_human(orch.judge_service.build_human_packet(run))
+            orch.repository.save_run(run)
+            bus.emit(
+                "phase",
+                {"phase": "debate", "message": "Awaiting human judge...", "status": "awaiting_human_judge"},
+            )
+            if not silent:
+                while run.status == RunStatus.AWAITING_HUMAN_JUDGE:
+                    _show_human_packet(run)
+                    action = _prompt_human_judge(run)
+                    bus.emit(
+                        "phase",
+                        {"phase": "debate", "message": "Human judge processing...", "status": "debating"},
+                    )
+                    run = await orch.continue_human_run(run.run_id, action)
+                    orch.repository.save_run(run)
+                    if run.status == RunStatus.COMPLETED:
+                        break
+                    # Rebuild packet after a requested round and loop
+                if not silent:
+                    _verdict(run)
+            return run
 
         # Phase: debate rounds
         while True:
@@ -1866,6 +1898,161 @@ def _verdict(run):
     print(f"    {DIM}Total: {total_tok}/{budget_tok} tokens  Run ID: {run.run_id}{RST}\n")
 
 
+def _show_human_packet(run) -> None:
+    """Display the human judge packet for interactive judging."""
+    packet = run.human_judge_packet
+    if not packet:
+        print(f"  {RED}No judge packet available.{RST}")
+        return
+
+    print(f"\n  {'═' * 60}")
+    print(f"  {GOLD}{BOLD}HUMAN JUDGE — REVIEW REQUIRED{RST}")
+    print(f"  {'─' * 60}")
+
+    # Plan cards
+    print(f"\n  {BOLD}Plans:{RST}")
+    for card in packet.plan_cards:
+        bar = _score_bar(card.overall_score)
+        print(f"\n    {CYAN}{BOLD}{card.display_name}{RST}  {bar} {card.overall_score:.2f}")
+        if card.summary:
+            print(_wrap(card.summary[:200], indent=6))
+        if card.strengths:
+            print(f"      {GREEN}+ {', '.join(card.strengths[:3])}{RST}")
+        if card.weaknesses:
+            print(f"      {RED}- {', '.join(card.weaknesses[:2])}{RST}")
+
+    # Last debate round summary
+    if run.debate_rounds:
+        dr = run.debate_rounds[-1]
+        print(f"\n  {BOLD}Last round (Round {dr.index} — {dr.round_type.value}):{RST}")
+        if dr.summary.key_disagreements:
+            for d in dr.summary.key_disagreements[:3]:
+                print(f"    {DIM}• {d}{RST}")
+        if dr.summary.moderator_note:
+            print(_wrap(dr.summary.moderator_note[:160], indent=4))
+
+    # Key disagreements from packet
+    if packet.key_disagreements:
+        print(f"\n  {BOLD}Key disagreements:{RST}")
+        for d in packet.key_disagreements[:4]:
+            print(f"    {DIM}• {d}{RST}")
+
+    # Strongest arguments
+    if packet.strongest_arguments:
+        print(f"\n  {BOLD}Strongest arguments:{RST}")
+        for a in packet.strongest_arguments[:3]:
+            print(f"    {DIM}• {a}{RST}")
+
+    print(f"\n  {GOLD}{BOLD}Recommended action:{RST} {packet.recommended_action}")
+    rounds_left = run.budget_policy.max_rounds - len(run.debate_rounds)
+    print(f"  {DIM}Rounds used: {len(run.debate_rounds)}/{run.budget_policy.max_rounds}  ({rounds_left} remaining){RST}")
+    print(f"  {'═' * 60}\n")
+
+
+def _prompt_human_judge(run) -> HumanJudgeActionRequest:
+    """Interactive prompt for the human judge to make a decision."""
+    packet = run.human_judge_packet
+    rounds_left = run.budget_policy.max_rounds - len(run.debate_rounds)
+
+    print(f"  {BOLD}Your decision:{RST}")
+    print(f"    {GOLD}1{RST}  Select a winner")
+    print(f"    {GOLD}2{RST}  Merge two plans")
+    if rounds_left > 0:
+        print(f"    {GOLD}3{RST}  Request another debate round  {DIM}({rounds_left} remaining){RST}")
+        print(f"    {GOLD}4{RST}  Request targeted revision  {DIM}({rounds_left} remaining){RST}")
+    print()
+
+    while True:
+        try:
+            choice = input(f"  {BOLD}Choice:{RST} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            choice = "1"
+
+        if choice == "1":
+            print(f"\n  {BOLD}Select the winning plan:{RST}")
+            for i, card in enumerate(packet.plan_cards, 1):
+                print(f"    {GOLD}{i}{RST}  {card.display_name}")
+            while True:
+                try:
+                    sel = input(f"  {BOLD}Plan number:{RST} ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    sel = "1"
+                try:
+                    idx = int(sel) - 1
+                    if 0 <= idx < len(packet.plan_cards):
+                        break
+                except ValueError:
+                    pass
+                print(f"  {RED}Enter a valid number.{RST}")
+            winning_id = packet.plan_cards[idx].plan_id
+            try:
+                reason = input(f"  {DIM}Rationale (optional, Enter to skip):{RST} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                reason = ""
+            return HumanJudgeActionRequest(
+                action="select_winner",
+                winning_plan_ids=[winning_id],
+                instructions=reason or None,
+            )
+
+        elif choice == "2":
+            if len(packet.plan_cards) < 2:
+                print(f"  {RED}Need at least 2 plans to merge.{RST}")
+                continue
+            print(f"\n  {BOLD}Select two plans to merge:{RST}")
+            for i, card in enumerate(packet.plan_cards, 1):
+                print(f"    {GOLD}{i}{RST}  {card.display_name}")
+            ids: list[str] = []
+            for label in ("First", "Second"):
+                while True:
+                    try:
+                        sel = input(f"  {BOLD}{label} plan number:{RST} ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        sel = str(len(ids) + 1)
+                    try:
+                        idx = int(sel) - 1
+                        if 0 <= idx < len(packet.plan_cards):
+                            ids.append(packet.plan_cards[idx].plan_id)
+                            break
+                    except ValueError:
+                        pass
+                    print(f"  {RED}Enter a valid number.{RST}")
+            try:
+                reason = input(f"  {DIM}Rationale (optional, Enter to skip):{RST} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                reason = ""
+            return HumanJudgeActionRequest(
+                action="merge_plans",
+                winning_plan_ids=ids,
+                instructions=reason or None,
+            )
+
+        elif choice == "3" and rounds_left > 0:
+            try:
+                instructions = input(f"  {DIM}Focus instructions (optional):{RST} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                instructions = ""
+            return HumanJudgeActionRequest(
+                action="request_round",
+                round_type=RoundType.CRITIQUE,
+                instructions=instructions or None,
+            )
+
+        elif choice == "4" and rounds_left > 0:
+            try:
+                instructions = input(f"  {DIM}Revision target (optional):{RST} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                instructions = ""
+            return HumanJudgeActionRequest(
+                action="request_revision",
+                round_type=RoundType.TARGETED_REVISION,
+                instructions=instructions or None,
+            )
+
+        print(f"  {RED}Invalid choice.{RST}")
+
+
 # ── Argument parser ──────────────────────────────────────────────
 
 
@@ -2041,7 +2228,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--judge",
         default=None,
         metavar="PROVIDER:MODEL",
-        help="AI judge model spec (e.g. -j claude:claude-opus-4-6). Omit to use automated judging.",
+        help="Judge spec: provider:model for AI judge (e.g. -j claude:claude-opus-4-6), or 'human' for interactive human judging. Omit for automated judging.",
     )
     p_debate.add_argument(
         "-f",

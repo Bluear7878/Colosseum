@@ -26,6 +26,7 @@ src/colosseum/core/models.py
 src/colosseum/personas/__init__.py
 src/colosseum/personas/generator.py
 src/colosseum/personas/loader.py
+src/colosseum/personas/prompting.py
 src/colosseum/personas/registry.py
 src/colosseum/personas/builtin/aggressive_innovator.md
 src/colosseum/personas/builtin/andrej_karpathy.md
@@ -49,6 +50,7 @@ src/colosseum/personas/builtin/serena_williams.md
 src/colosseum/personas/builtin/yoshua_bengio.md
 src/colosseum/providers/__init__.py
 src/colosseum/providers/base.py
+src/colosseum/providers/cli_adapters.py
 src/colosseum/providers/cli_wrapper.py
 src/colosseum/providers/command.py
 src/colosseum/providers/factory.py
@@ -61,9 +63,12 @@ src/colosseum/services/context_media.py
 src/colosseum/services/debate.py
 src/colosseum/services/event_bus.py
 src/colosseum/services/judge.py
+src/colosseum/services/local_runtime.py
+src/colosseum/services/markdown_report.py
 src/colosseum/services/normalizers.py
 src/colosseum/services/orchestrator.py
 src/colosseum/services/pdf_report.py
+src/colosseum/services/prompt_contracts.py
 src/colosseum/services/provider_runtime.py
 src/colosseum/services/report_synthesizer.py
 src/colosseum/services/repository.py
@@ -73,10 +78,13 @@ src/colosseum/web/report.html
 src/colosseum/web/report.js
 src/colosseum/web/styles.css
 tests/test_evidence_policy.py
+tests/test_local_runtime_api.py
+tests/test_local_runtime_service.py
 tests/test_monitor.py
 tests/test_orchestrator.py
 tests/test_paid_quotas.py
 tests/test_persona_generator.py
+tests/test_persona_prompting.py
 tests/test_persona_registry.py
 tests/test_qa_fixes.py
 tests/test_runtime_guards.py

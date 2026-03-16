@@ -293,6 +293,37 @@ h1 {
   border-color: rgba(180, 100, 60, 0.4);
 }
 
+.card-fit-badge {
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  min-height: 18px;
+  margin-top: 2px;
+  background: rgba(255,255,255,0.04);
+  color: #9ca3af;
+}
+.card-fit-badge.badge-green { background: rgba(74,222,128,0.12); color: #4ade80; }
+.card-fit-badge.badge-yellow { background: rgba(251,191,36,0.12); color: #fbbf24; }
+.card-fit-badge.badge-red { background: rgba(248,113,113,0.12); color: #f87171; }
+
+.card-gpu-selector { width: 100%; margin-top: 4px; text-align: left; }
+.card-gpu-selector.hidden { display: none; }
+.card-gpu-label { font-size: 0.68rem; color: #6b7280; margin-bottom: 2px; }
+.card-gpu-options { display: flex; flex-wrap: wrap; gap: 3px; }
+.card-gpu-opt {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 0.7rem; color: #d1d5db; cursor: pointer;
+  background: rgba(255,255,255,0.05); border-radius: 4px;
+  padding: 2px 5px; white-space: nowrap;
+}
+.card-gpu-opt input[type="radio"] { cursor: pointer; accent-color: var(--gold); }
+.card-gpu-vram { color: #6b7280; font-size: 0.65rem; }
+.card-gpu-warning {
+  margin-top: 3px; font-size: 0.68rem; padding: 2px 5px;
+  border-radius: 3px; width: 100%;
+  background: rgba(248,113,113,0.1); color: #f87171;
+}
+
 .auth-chip {
   margin-top: 2px;
   padding: 3px 8px;
@@ -422,89 +453,6 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-}
-
-.local-runtime-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(142, 205, 183, 0.16);
-  background:
-    linear-gradient(135deg, rgba(142, 205, 183, 0.08), rgba(212, 164, 76, 0.05)),
-    rgba(15, 15, 26, 0.54);
-}
-
-.local-runtime-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.local-runtime-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.runtime-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(212, 164, 76, 0.12);
-  background: rgba(26, 26, 46, 0.72);
-  color: var(--sand-muted);
-  font-size: 0.74rem;
-  font-weight: 700;
-}
-
-.runtime-chip.ok {
-  border-color: rgba(142, 205, 183, 0.35);
-  color: #9fd6c2;
-}
-
-.runtime-chip.warn {
-  border-color: rgba(192, 57, 43, 0.28);
-  color: #efb0a8;
-}
-
-.local-runtime-controls {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-}
-
-.local-runtime-control {
-  flex: 1 1 220px;
-}
-
-.local-runtime-model {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.local-runtime-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.local-model-availability {
-  min-height: 42px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(212, 164, 76, 0.1);
-  background: rgba(26, 26, 46, 0.58);
-  color: var(--sand-muted);
-  font-size: 0.82rem;
-  line-height: 1.45;
 }
 
 .runtime-badge {
@@ -2518,3 +2466,10 @@ details[open] .collapsible-summary {
     grid-template-columns: 1fr;
   }
 }
+
+.local-model-fit-badge.hidden { display: none; }
+.badge-green { background: #1a3d2b; color: #4ade80; border: 1px solid #166534; }
+.badge-yellow { background: #3d3010; color: #fbbf24; border: 1px solid #92400e; }
+.badge-red { background: #3d1010; color: #f87171; border: 1px solid #991b1b; }
+.badge-gray { background: #2a2a2a; color: #9ca3af; border: 1px solid #4b5563; }
+.local-runtime-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; margin-left: 8px; }

@@ -279,20 +279,20 @@ class LocalGpuDevice(BaseModel):
 class LocalRuntimeSettings(BaseModel):
     """Persisted settings for the managed local-model runtime.
 
-    `gpu_count=None` means "auto" (use every detected GPU).
-    `gpu_count=0` forces CPU-only execution.
-    Positive integers clamp to the number of detected GPUs and use the first N devices.
+    `selected_gpu_indices=None` means "auto" (use every detected GPU).
+    `selected_gpu_indices=[]` forces CPU-only execution.
+    A list like `[0]` or `[1, 2]` selects specific GPU(s) by index.
     """
 
     host: str = "127.0.0.1:11435"
-    gpu_count: int | None = Field(default=None, ge=0)
+    selected_gpu_indices: list[int] | None = None
     auto_start: bool = True
 
 
 class LocalRuntimeConfigUpdate(BaseModel):
     """Partial update payload for local runtime settings."""
 
-    gpu_count: int | None = Field(default=None, ge=0)
+    selected_gpu_indices: list[int] | None = None
     auto_start: bool | None = None
     restart_runtime: bool = True
 
@@ -308,6 +308,8 @@ class LocalRuntimeStatus(BaseModel):
     gpu_devices: list[LocalGpuDevice] = Field(default_factory=list)
     selected_gpu_indices: list[int] = Field(default_factory=list)
     selected_gpu_count: int = Field(default=0, ge=0)
+    llmfit_installed: bool = False
+    llmfit_version: str | None = None
     installed_models: list[str] = Field(default_factory=list)
     installed_models_known: bool = False
     runtime_note: str | None = None
@@ -334,6 +336,17 @@ class LocalModelDownloadResult(BaseModel):
     model: str
     message: str
     status: LocalRuntimeStatus
+
+
+class LocalModelFitResult(BaseModel):
+    """Result of checking whether a model can run on current hardware via llmfit."""
+
+    model: str
+    fit_level: Literal["perfect", "good", "marginal", "too_tight", "unknown"] = "unknown"
+    run_mode: str | None = None
+    can_run: bool | None = None  # True if fit_level in (perfect, good, marginal)
+    message: str = ""
+    memory_required_gb: float | None = None  # VRAM needed to run this model
 
 
 class AgentConfig(BaseModel):

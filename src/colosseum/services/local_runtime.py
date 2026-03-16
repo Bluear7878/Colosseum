@@ -17,6 +17,7 @@ from colosseum.core.config import (
 from colosseum.core.models import (
     LocalGpuDevice,
     LocalModelDownloadResult,
+    LocalModelFitResult,
     LocalRuntimeConfigUpdate,
     LocalRuntimeSettings,
     LocalRuntimeStatus,
@@ -66,8 +67,8 @@ class LocalRuntimeService:
         with self._lock:
             current = self.load_settings()
             merged_update: dict[str, object] = {}
-            if "gpu_count" in update.model_fields_set:
-                merged_update["gpu_count"] = update.gpu_count
+            if "selected_gpu_indices" in update.model_fields_set:
+                merged_update["selected_gpu_indices"] = update.selected_gpu_indices
             if "auto_start" in update.model_fields_set:
                 merged_update["auto_start"] = update.auto_start
             merged = current.model_copy(update=merged_update)
@@ -87,7 +88,7 @@ class LocalRuntimeService:
         devices = self._detect_nvidia_devices()
         return devices
 
-    def selected_gpu_indices(
+    def resolve_selected_gpu_indices(
         self,
         settings: LocalRuntimeSettings | None = None,
         devices: list[LocalGpuDevice] | None = None,
@@ -97,11 +98,11 @@ class LocalRuntimeService:
         devices = devices if devices is not None else self.detect_gpu_devices()
         if not devices:
             return []
-        if settings.gpu_count is None:
+        if settings.selected_gpu_indices is None:
             return [device.index for device in devices]
-        if settings.gpu_count <= 0:
+        if settings.selected_gpu_indices == []:
             return []
-        return [device.index for device in devices[: settings.gpu_count]]
+        return [i for i in settings.selected_gpu_indices if i < len(devices)]
 
     def get_status(self, ensure_ready: bool = False) -> LocalRuntimeStatus:
         """Return the managed runtime status for the UI and CLI."""
@@ -113,7 +114,7 @@ class LocalRuntimeService:
 
         settings = self.load_settings()
         devices = self.detect_gpu_devices()
-        selected_gpu_indices = self.selected_gpu_indices(settings, devices)
+        selected_gpu_indices = self.resolve_selected_gpu_indices(settings, devices)
         runtime_running = self._runtime_ready(settings.host)
         managed_pid = self._read_pid()
         if managed_pid and not self._pid_is_running(managed_pid):
@@ -135,6 +136,8 @@ class LocalRuntimeService:
             gpu_devices=devices,
             selected_gpu_indices=selected_gpu_indices,
             selected_gpu_count=len(selected_gpu_indices),
+            llmfit_installed=self._llmfit_installed(),
+            llmfit_version=self._llmfit_version(),
             installed_models=installed_models,
             installed_models_known=installed_models_known,
             runtime_note=self._build_runtime_note(
@@ -280,16 +283,17 @@ class LocalRuntimeService:
         """Build the environment block used to launch the managed runtime."""
         env = self.provider_env()
         devices = self.detect_gpu_devices()
-        selected_indices = self.selected_gpu_indices(settings, devices)
+        selected = self.resolve_selected_gpu_indices(settings, devices)
         if devices:
             backend = devices[0].backend
-            if settings.gpu_count == 0:
+            if not selected:
+                # Empty list = CPU only
                 if backend == "nvidia":
                     env["CUDA_VISIBLE_DEVICES"] = "-1"
                 elif backend == "amd":
                     env["ROCR_VISIBLE_DEVICES"] = ""
-            elif selected_indices:
-                visible_devices = ",".join(str(index) for index in selected_indices)
+            else:
+                visible_devices = ",".join(str(i) for i in selected)
                 if backend == "nvidia":
                     env["CUDA_VISIBLE_DEVICES"] = visible_devices
                 elif backend == "amd":
@@ -342,6 +346,139 @@ class LocalRuntimeService:
 
     def _ollama_installed(self) -> bool:
         return shutil_which("ollama") is not None
+
+    def _llmfit_installed(self) -> bool:
+        return shutil_which("llmfit") is not None
+
+    def _llmfit_version(self) -> str | None:
+        if not self._llmfit_installed():
+            return None
+        try:
+            result = subprocess.run(
+                ["llmfit", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return None
+        match = re.search(r"(\d+\.\d+\.\d+)", result.stdout or result.stderr or "")
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _llmfit_search_terms(ollama_model_id: str) -> list[str]:
+        """Return search terms to try against llmfit, in priority order.
+
+        Try the original name first; if llmfit returns 0 results, fall back to
+        a version with dashes inserted between word-parts and version digits
+        (e.g. llama3.3 → llama-3.3, phi4 → phi-4).
+
+        Single-letter prefixes like the 'r' in deepseek-r1 are left alone so we
+        don't turn 'deepseek-r1' into 'deepseek-r-1'.
+        """
+        base = ollama_model_id.replace(":", "-")
+        with_dashes = re.sub(r"([a-zA-Z]{2,})(\d)", r"\1-\2", base)
+        if with_dashes != base:
+            return [base, with_dashes]
+        return [base]
+
+    def check_model_fit(self, model_name: str) -> LocalModelFitResult:
+        """Use llmfit CLI to check if a model can run on current hardware."""
+        import json as _json
+        import urllib.request
+        from urllib.parse import quote
+
+        normalized = self.normalize_model_name(model_name)
+        if not normalized:
+            return LocalModelFitResult(model=model_name, fit_level="unknown", message="No model name provided.")
+        if not self._llmfit_installed():
+            return LocalModelFitResult(
+                model=normalized,
+                fit_level="unknown",
+                message="llmfit not installed",
+            )
+
+        search_terms = self._llmfit_search_terms(normalized)
+        port = 17879  # Dedicated port separate from Colosseum's other services
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                ["llmfit", "serve", "--host", "127.0.0.1", "--port", str(port)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Wait for llmfit serve to become ready (up to 10 seconds)
+            deadline = time.monotonic() + 10.0
+            ready = False
+            while time.monotonic() < deadline:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+                    ready = True
+                    break
+                except Exception:
+                    time.sleep(0.3)
+
+            if not ready:
+                return LocalModelFitResult(model=normalized, fit_level="unknown", message="llmfit serve did not start in time.")
+
+            models: list[dict] = []
+            for term in search_terms:
+                url = f"http://127.0.0.1:{port}/api/v1/models?search={quote(term)}&limit=1"
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    data = _json.loads(resp.read().decode())
+                models = data.get("models", []) if isinstance(data, dict) else []
+                if models:
+                    break
+
+            if not models:
+                return LocalModelFitResult(
+                    model=normalized, fit_level="unknown",
+                    message=f"'{normalized}' not found in llmfit database",
+                )
+
+            best = models[0]
+            fit_level_raw = str(best.get("fit_level", "")).lower().replace(" ", "_").replace("-", "_")
+            run_mode = str(best.get("run_mode", "") or "").lower() or None
+
+            fit_map = {"perfect": "perfect", "good": "good", "marginal": "marginal", "too_tight": "too_tight", "tootight": "too_tight"}
+            fit_level = fit_map.get(fit_level_raw, "unknown")
+            can_run = fit_level in ("perfect", "good", "marginal")
+
+            # Extract VRAM requirement for frontend VRAM budget checks
+            memory_required_gb: float | None = None
+            try:
+                raw_mem = best.get("memory_required_gb") or best.get("total_memory_gb")
+                if raw_mem is not None:
+                    memory_required_gb = float(raw_mem)
+            except (TypeError, ValueError):
+                pass
+
+            labels = {
+                "perfect": "Fits",
+                "good": "Fits",
+                "marginal": "Marginal",
+                "too_tight": "Too large",
+                "unknown": "Unknown",
+            }
+            return LocalModelFitResult(
+                model=normalized,
+                fit_level=fit_level,  # type: ignore[arg-type]
+                run_mode=run_mode,
+                can_run=can_run,
+                message=labels.get(fit_level, "Unknown"),
+                memory_required_gb=memory_required_gb,
+            )
+        except Exception as exc:
+            _log = __import__("logging").getLogger(__name__)
+            _log.debug("llmfit check failed for %s: %s", normalized, exc)
+            return LocalModelFitResult(model=normalized, fit_level="unknown", message="Unknown")
+        finally:
+            if proc is not None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    proc.kill()
 
     def _ollama_version(self) -> str | None:
         if not self._ollama_installed():
@@ -454,18 +591,13 @@ class LocalRuntimeService:
             return "Ollama is not installed. Install it to use local models."
         if not devices:
             return f"Managed runtime is {state_label}. No compatible GPUs detected; local models will run on CPU."
-        if settings.gpu_count is None:
+        if settings.selected_gpu_indices is None:
             return f"Managed runtime is {state_label}. Auto mode will expose all {len(devices)} detected GPU(s)."
-        if settings.gpu_count == 0:
+        if settings.selected_gpu_indices == []:
             return f"Managed runtime is {state_label}. CPU-only mode is selected."
-        requested = settings.gpu_count
         actual = len(selected_gpu_indices)
-        if requested > len(devices):
-            return (
-                f"Managed runtime is {state_label}. Requested {requested} GPU(s), "
-                f"but only {len(devices)} were detected, so Colosseum will use {actual}."
-            )
-        return f"Managed runtime is {state_label}. Colosseum will use the first {actual} GPU(s)."
+        indices_str = ", ".join(str(i) for i in settings.selected_gpu_indices)
+        return f"Managed runtime is {state_label}. Colosseum will use GPU(s): {indices_str} ({actual} active)."
 
 
 def shutil_which(binary: str) -> str | None:

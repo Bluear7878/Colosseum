@@ -183,6 +183,9 @@ var CLI_GROUP_TOOL_MAP = {
 var cliAuthStates = {};
 var localRuntimeState = null;
 var localRuntimeLoading = false;
+var fitResultCache = {};       // normalizedModel → LocalModelFitResult
+var fitResultPending = {};     // normalizedModel → true (in-flight)
+var gladiatorGpuAssignment = {}; // gid → [gpuIndex, ...] | null (null = runtime default)
 
 function isLocalModelType(type) {
   return type === "ollama" || type === "huggingface_local";
@@ -209,14 +212,187 @@ function isLocalModelInstalled(modelId) {
   });
 }
 
-function gpuModeValueFromStatus(status) {
-  if (!status || !status.settings) return "auto";
-  if (status.settings.gpu_count === null || typeof status.settings.gpu_count === "undefined") {
-    return "auto";
-  }
-  if (status.settings.gpu_count === 0) return "cpu";
-  return String(status.settings.gpu_count);
+
+var FIT_ICONS   = { perfect: "✅", good: "✓", marginal: "⚠️", too_tight: "❌", unknown: "−" };
+var FIT_CLASSES = { perfect: "badge-green", good: "badge-green", marginal: "badge-yellow", too_tight: "badge-red", unknown: "badge-gray" };
+
+function applyFitResultToBadge(badgeEl, result) {
+  var memLabel = result.memory_required_gb ? " (" + result.memory_required_gb.toFixed(1) + " GB)" : "";
+  badgeEl.textContent = (FIT_ICONS[result.fit_level] || "−") + " " + result.message + memLabel;
+  badgeEl.className = badgeEl.className.replace(/badge-\S+/g, "").trim();
+  badgeEl.classList.add(FIT_CLASSES[result.fit_level] || "badge-gray");
+  badgeEl.classList.remove("hidden");
 }
+
+// Render per-card GPU selector for a given gladiator card
+function renderCardGpuSelector(gid, cardEl, fitResult) {
+  var selectorEl = cardEl ? cardEl.querySelector(".card-gpu-selector") : null;
+  if (!selectorEl) return;
+  var devices = (localRuntimeState && localRuntimeState.gpu_devices) || [];
+  if (!devices.length) { selectorEl.innerHTML = ""; return; }
+
+  var assigned = gladiatorGpuAssignment[gid] || null; // null = runtime default
+  var memNeededGb = fitResult && fitResult.memory_required_gb;
+
+  var html = '<div class="card-gpu-label">GPU</div>';
+  html += '<div class="card-gpu-options">';
+  html += '<label class="card-gpu-opt"><input type="radio" name="gpu-' + esc(gid) + '" value="auto"' + (!assigned ? ' checked' : '') + '> Auto</label>';
+  devices.forEach(function(dev) {
+    var vramGb = dev.memory_total_mb ? (dev.memory_total_mb / 1024).toFixed(0) : "?";
+    var isChecked = assigned && assigned.length === 1 && assigned[0] === dev.index;
+    html += '<label class="card-gpu-opt"><input type="radio" name="gpu-' + esc(gid) + '" value="' + dev.index + '"' + (isChecked ? ' checked' : '') + '> GPU ' + dev.index + ' <span class="card-gpu-vram">' + vramGb + 'GB</span></label>';
+  });
+  if (devices.length > 1) {
+    var isAllChecked = assigned && assigned.length === devices.length;
+    html += '<label class="card-gpu-opt"><input type="radio" name="gpu-' + esc(gid) + '" value="all"' + (isAllChecked ? ' checked' : '') + '> All (' + devices.length + ')</label>';
+  }
+  html += '</div>';
+
+  // VRAM feasibility warning
+  if (memNeededGb && assigned !== null) {
+    var warning = checkGpuVramFeasibility(gid, assigned, memNeededGb, devices);
+    if (warning) html += '<div class="card-gpu-warning">' + esc(warning) + '</div>';
+  }
+
+  selectorEl.innerHTML = html;
+
+  // Event: radio change → update assignment
+  selectorEl.querySelectorAll('input[type="radio"]').forEach(function(radio) {
+    radio.addEventListener("change", function() {
+      var val = radio.value;
+      if (val === "auto") {
+        gladiatorGpuAssignment[gid] = null;
+      } else if (val === "all") {
+        gladiatorGpuAssignment[gid] = devices.map(function(d) { return d.index; });
+      } else {
+        gladiatorGpuAssignment[gid] = [parseInt(val, 10)];
+      }
+      renderCardGpuSelector(gid, cardEl, fitResult);
+      validateAllGpuAssignments();
+    });
+  });
+}
+
+// Check if assigned GPUs have enough VRAM for this model,
+// accounting for other models already assigned to the same GPUs.
+function checkGpuVramFeasibility(targetGid, assignedIndices, memNeededGb, devices) {
+  if (!assignedIndices || !assignedIndices.length) return null;
+
+  // Multi-GPU: total VRAM = sum across assigned devices
+  var totalVramGb = assignedIndices.reduce(function(sum, idx) {
+    var dev = devices.find(function(d) { return d.index === idx; });
+    return sum + (dev && dev.memory_total_mb ? dev.memory_total_mb / 1024 : 0);
+  }, 0);
+
+  // Compute already-committed VRAM on these GPUs from other gladiators
+  var committed = 0;
+  Object.keys(gladiatorGpuAssignment).forEach(function(otherGid) {
+    if (otherGid === targetGid) return;
+    var otherAssigned = gladiatorGpuAssignment[otherGid];
+    if (!otherAssigned || !otherAssigned.length) return;
+    var overlaps = otherAssigned.some(function(i) { return assignedIndices.indexOf(i) !== -1; });
+    if (!overlaps) return;
+    var otherVariant = (function() {
+      var glad = GLADIATORS.find(function(g) { return g.id === otherGid; });
+      if (!glad) return null;
+      var idx = gladiatorVariants[otherGid] || 0;
+      return glad.variants[idx];
+    })();
+    if (!otherVariant) return;
+    var otherNorm = normalizeLocalModelId(otherVariant.model);
+    var otherFit = fitResultCache[otherNorm];
+    if (otherFit && otherFit.memory_required_gb) committed += otherFit.memory_required_gb;
+  });
+
+  var remaining = totalVramGb - committed;
+  if (memNeededGb > remaining) {
+    return "Insufficient VRAM: need " + memNeededGb.toFixed(1) + " GB, " + remaining.toFixed(1) + " GB free (" + committed.toFixed(1) + "/" + totalVramGb.toFixed(0) + " GB used)";
+  }
+  if (assignedIndices.length > 1) {
+    return "Multi-GPU ×" + assignedIndices.length + " · total VRAM " + totalVramGb.toFixed(0) + " GB";
+  }
+  return null;
+}
+
+// Re-validate all cards after assignment change
+function validateAllGpuAssignments() {
+  document.querySelectorAll('.gladiator-card[data-gid]').forEach(function(card) {
+    var gid = card.dataset.gid;
+    var glad = GLADIATORS.find(function(g) { return g.id === gid && g.tier === "free"; });
+    if (!glad) return;
+    var idx = gladiatorVariants[gid] || 0;
+    var variant = glad.variants[idx];
+    if (!variant) return;
+    var norm = normalizeLocalModelId(variant.model);
+    var fit = fitResultCache[norm];
+    if (fit) renderCardGpuSelector(gid, card, fit);
+  });
+}
+
+// Fetch fit for a gladiator card's inline badge (with cache)
+function loadCardFitBadge(gid, modelId, cardEl) {
+  if (!modelId) return;
+  // Skip entirely if llmfit is not installed
+  if (!localRuntimeState || !localRuntimeState.llmfit_installed) return;
+  var normalized = normalizeLocalModelId(modelId);
+  if (!normalized) return;
+  var badgeEl = cardEl ? cardEl.querySelector(".card-fit-badge") : null;
+  if (!badgeEl) return;
+
+  var applyToCard = function(result) {
+    applyFitResultToBadge(badgeEl, result);
+    // Show/hide GPU selector based on whether model can potentially run
+    var selectorEl = cardEl.querySelector(".card-gpu-selector");
+    if (selectorEl) {
+      if (result.fit_level !== "too_tight") {
+        selectorEl.classList.remove("hidden");
+        renderCardGpuSelector(gid, cardEl, result);
+      } else {
+        selectorEl.classList.add("hidden");
+      }
+    }
+  };
+
+  if (fitResultCache[normalized]) {
+    applyToCard(fitResultCache[normalized]);
+    return;
+  }
+  if (fitResultPending[normalized]) {
+    badgeEl.textContent = "…";
+    return;
+  }
+  fitResultPending[normalized] = true;
+  badgeEl.textContent = "…";
+  api("/local-models/fit-check?model=" + encodeURIComponent(normalized))
+    .then(function(result) {
+      fitResultCache[normalized] = result;
+      delete fitResultPending[normalized];
+      // Update ALL cards showing this model
+      document.querySelectorAll('.card-fit-badge').forEach(function(el) {
+        var parentCard = el.closest('[data-gid]');
+        if (!parentCard) return;
+        var gId = parentCard.dataset.gid;
+        var glad = GLADIATORS.find(function(g) { return g.id === gId; });
+        if (!glad) return;
+        var vIdx = gladiatorVariants[gId] || 0;
+        var v = glad.variants[vIdx];
+        if (v && normalizeLocalModelId(v.model) === normalized) {
+          applyFitResultToBadge(el, result);
+          var sel = parentCard.querySelector(".card-gpu-selector");
+          if (sel) {
+            if (result.fit_level !== "too_tight") {
+              sel.classList.remove("hidden");
+              renderCardGpuSelector(gId, parentCard, result);
+            } else {
+              sel.classList.add("hidden");
+            }
+          }
+        }
+      });
+    })
+    .catch(function() { delete fitResultPending[normalized]; });
+}
+
 
 function fetchSetupStatus() {
   return api("/setup/status").then(function(statuses) {
@@ -233,16 +409,24 @@ function fetchSetupStatus() {
 function fetchLocalRuntimeStatus(ensureReady) {
   var suffix = ensureReady ? "?ensure_ready=true" : "";
   localRuntimeLoading = true;
-  renderLocalRuntimePanel();
   return api("/local-runtime/status" + suffix).then(function(status) {
     localRuntimeState = status;
     localRuntimeLoading = false;
-    renderLocalRuntimePanel();
     renderRegisteredList();
+    // Now that we know llmfit status, reload fit badges on all free gladiator cards
+    if (status.llmfit_installed) {
+      document.querySelectorAll('.gladiator-card[data-gid]').forEach(function(card) {
+        var gid = card.dataset.gid;
+        var glad = GLADIATORS.find(function(g) { return g.id === gid && g.tier === "free"; });
+        if (!glad) return;
+        var idx = gladiatorVariants[gid] || 0;
+        var variant = glad.variants[idx];
+        if (variant) loadCardFitBadge(gid, variant.model, card);
+      });
+    }
     return status;
   }).catch(function(err) {
     localRuntimeLoading = false;
-    renderLocalRuntimePanel();
     throw err;
   });
 }
@@ -685,7 +869,12 @@ function renderGladiatorGrid() {
   var freeGrid = document.createElement("div");
   freeGrid.className = "tier-grid";
   freeGladiators.forEach(function(g) {
-    freeGrid.appendChild(createGladiatorCard(g));
+    var card = createGladiatorCard(g);
+    freeGrid.appendChild(card);
+    // Pre-load fit badge for default variant
+    var idx = gladiatorVariants[g.id] || 0;
+    var variant = g.variants[idx];
+    if (variant) loadCardFitBadge(g.id, variant.model, card);
   });
   // Custom CLI models
   freeCustomModels.forEach(function(m) {
@@ -722,6 +911,12 @@ function createGladiatorCard(g) {
     html += '<option value="' + i + '"' + (i === currentIdx ? ' selected' : '') + '>' + esc(v.label) + '</option>';
   });
   html += '</select>';
+
+  // Fit badge + GPU selector (free/local models only)
+  if (g.tier === "free") {
+    html += '<div class="card-fit-badge" data-gid="' + esc(g.id) + '"></div>';
+    html += '<div class="card-gpu-selector hidden" data-gid="' + esc(g.id) + '"></div>';
+  }
 
   // Persona select
   html += '<select class="persona-select" data-gid="' + esc(g.id) + '" title="Assign a debating persona"' + (isDisabled ? ' disabled' : '') + '>';
@@ -781,6 +976,11 @@ function createGladiatorCard(g) {
       delete selectedGladiators[g.id];
     } else {
       selectedGladiators[g.id] = true;
+      if (g.tier === "free") {
+        var selIdx = gladiatorVariants[g.id] || 0;
+        var variant = g.variants[selIdx];
+        if (variant) loadCardFitBadge(g.id, variant.model, card);
+      }
     }
     card.classList.toggle("selected", !!selectedGladiators[g.id]);
   });
@@ -789,6 +989,14 @@ function createGladiatorCard(g) {
   var varSel = card.querySelector(".gladiator-select");
   varSel.addEventListener("change", function() {
     gladiatorVariants[g.id] = parseInt(varSel.value);
+    // Refresh fit badge and GPU selector on variant change for free models
+    if (g.tier === "free") {
+      var newVariant = g.variants[gladiatorVariants[g.id]];
+      if (newVariant) {
+        gladiatorGpuAssignment[g.id] = null; // reset GPU choice when variant changes
+        loadCardFitBadge(g.id, newVariant.model, card);
+      }
+    }
   });
 
   // Persona change
@@ -1000,6 +1208,7 @@ renderGladiatorGrid();
 renderQuotaPanel();
 fetchQuotaStates();
 fetchSetupStatus();
+fetchLocalRuntimeStatus(false);  // populate GPU panel and fit badges on load
 
 // Fetch dynamic models — poll every 5s until probed results arrive
 refreshGladiatorsFromAPI();
@@ -1291,101 +1500,6 @@ document.getElementById("add-cli-btn").addEventListener("click", function() {
   syncCustomModelForm();
 });
 
-function renderLocalRuntimePanel() {
-  var panel = document.getElementById("local-runtime-panel");
-  var type = document.getElementById("cli-type").value;
-  var modelField = document.getElementById("cli-model-id");
-  var summary = document.getElementById("local-runtime-summary");
-  var note = document.getElementById("local-runtime-note");
-  var availability = document.getElementById("local-model-availability");
-  var gpuMode = document.getElementById("local-gpu-mode");
-  var applyBtn = document.getElementById("local-runtime-apply");
-  var refreshBtn = document.getElementById("local-runtime-refresh");
-  var downloadBtn = document.getElementById("local-model-download");
-
-  if (!isLocalModelType(type)) {
-    panel.classList.add("hidden");
-    downloadBtn.classList.add("hidden");
-    return;
-  }
-
-  panel.classList.remove("hidden");
-  summary.innerHTML = "";
-  gpuMode.innerHTML = '<option value="auto">Auto (all detected GPUs)</option><option value="cpu">CPU only</option>';
-
-  if (localRuntimeLoading) {
-    summary.innerHTML = '<span class="runtime-chip">Checking runtime...</span>';
-    note.textContent = "Inspecting the managed runtime and GPU inventory.";
-    availability.textContent = "Checking runtime...";
-    applyBtn.disabled = true;
-    refreshBtn.disabled = true;
-    downloadBtn.classList.add("hidden");
-    return;
-  }
-
-  refreshBtn.disabled = false;
-  applyBtn.disabled = false;
-
-  if (!localRuntimeState) {
-    summary.innerHTML = '<span class="runtime-chip">Runtime status unavailable</span>';
-    note.textContent = "Refresh runtime to inspect GPUs and installed models.";
-    availability.textContent = "Refresh runtime to inspect installed models.";
-    downloadBtn.classList.add("hidden");
-    return;
-  }
-
-  var devices = localRuntimeState.gpu_devices || [];
-  devices.forEach(function(device, idx) {
-    var label = "Use first " + (idx + 1) + " GPU" + (idx === 0 ? "" : "s");
-    gpuMode.innerHTML += '<option value="' + (idx + 1) + '">' + esc(label) + '</option>';
-  });
-  gpuMode.value = gpuModeValueFromStatus(localRuntimeState);
-  if (gpuMode.value !== gpuModeValueFromStatus(localRuntimeState)) {
-    gpuMode.value = devices.length ? String(devices.length) : "cpu";
-  }
-
-  summary.innerHTML =
-    '<span class="runtime-chip' + (localRuntimeState.ollama_installed ? ' ok' : ' warn') + '">' +
-      (localRuntimeState.ollama_installed ? 'Ollama installed' : 'Ollama missing') +
-    '</span>' +
-    '<span class="runtime-chip' + (localRuntimeState.runtime_running ? ' ok' : ' warn') + '">' +
-      (localRuntimeState.runtime_running ? 'Runtime running' : 'Runtime stopped') +
-    '</span>' +
-    '<span class="runtime-chip">Host ' + esc((localRuntimeState.settings && localRuntimeState.settings.host) || '127.0.0.1:11435') + '</span>' +
-    '<span class="runtime-chip">Detected GPUs ' + esc(devices.length) + '</span>';
-
-  if (localRuntimeState.runtime_note) {
-    note.textContent = localRuntimeState.runtime_note;
-  } else if (!devices.length) {
-    note.textContent = "No compatible GPUs detected. Local models will fall back to CPU.";
-  } else {
-    note.textContent = "Colosseum will expose the selected GPUs to its managed local runtime.";
-  }
-
-  var normalizedModel = normalizeLocalModelId(modelField.value);
-  if (!normalizedModel) {
-    availability.textContent = "Enter a local model id to check installation status.";
-    downloadBtn.classList.add("hidden");
-  } else if (!localRuntimeState.installed_models_known) {
-    availability.textContent = "Runtime not started yet. Apply settings or refresh runtime to inspect installed models.";
-    downloadBtn.classList.remove("hidden");
-    downloadBtn.disabled = !localRuntimeState.ollama_installed;
-  } else if (isLocalModelInstalled(normalizedModel)) {
-    availability.innerHTML = '<span class="runtime-badge ok">Installed</span> ' +
-      esc(normalizedModel) + ' is available in the managed runtime.';
-    downloadBtn.classList.add("hidden");
-  } else {
-    availability.innerHTML = '<span class="runtime-badge warn">Missing</span> ' +
-      esc(normalizedModel) + ' is not installed yet.';
-    downloadBtn.classList.remove("hidden");
-    downloadBtn.disabled = !localRuntimeState.ollama_installed;
-  }
-
-  if (!localRuntimeState.ollama_installed) {
-    applyBtn.disabled = true;
-    downloadBtn.disabled = true;
-  }
-}
 
 function syncCustomModelForm() {
   var type = document.getElementById("cli-type").value;
@@ -1412,7 +1526,6 @@ function syncCustomModelForm() {
   help.textContent = tier === "paid"
     ? "Paid custom models can use the same quota tracker. Give them a quota key or let Colosseum generate one."
     : "Free custom models can join debates immediately and can also be used as fallback models. Image-aware custom CLIs can read metadata.image_inputs for shared VLM debates.";
-  renderLocalRuntimePanel();
   if (
     isLocalModelType(type) &&
     !localRuntimeLoading &&
@@ -1426,60 +1539,6 @@ function syncCustomModelForm() {
 
 document.getElementById("cli-type").addEventListener("change", syncCustomModelForm);
 document.getElementById("cli-tier").addEventListener("change", syncCustomModelForm);
-document.getElementById("cli-model-id").addEventListener("input", renderLocalRuntimePanel);
-document.getElementById("local-runtime-refresh").addEventListener("click", function() {
-  fetchLocalRuntimeStatus(true).then(function() {
-    fetchModels();
-  }).catch(function(err) {
-    toast("Could not refresh local runtime: " + (err.message || ""));
-  });
-});
-document.getElementById("local-runtime-apply").addEventListener("click", function() {
-  var mode = document.getElementById("local-gpu-mode").value;
-  var body = { restart_runtime: true };
-  if (mode === "auto") body.gpu_count = null;
-  else if (mode === "cpu") body.gpu_count = 0;
-  else body.gpu_count = parseInt(mode, 10) || 1;
-
-  localRuntimeLoading = true;
-  renderLocalRuntimePanel();
-  api("/local-runtime/config", {
-    method: "POST",
-    body: JSON.stringify(body)
-  }).then(function(status) {
-    localRuntimeState = status;
-    localRuntimeLoading = false;
-    renderLocalRuntimePanel();
-    renderRegisteredList();
-    fetchModels();
-    toast("Local runtime settings applied.");
-  }).catch(function(err) {
-    localRuntimeLoading = false;
-    renderLocalRuntimePanel();
-    toast("Could not apply local runtime settings: " + (err.message || ""));
-  });
-});
-document.getElementById("local-model-download").addEventListener("click", function() {
-  var modelId = normalizeLocalModelId(document.getElementById("cli-model-id").value);
-  if (!modelId) return toast("Enter a local model id first.");
-  localRuntimeLoading = true;
-  renderLocalRuntimePanel();
-  api("/local-models/download", {
-    method: "POST",
-    body: JSON.stringify({ model: modelId })
-  }).then(function(result) {
-    localRuntimeState = result.status || localRuntimeState;
-    localRuntimeLoading = false;
-    renderLocalRuntimePanel();
-    renderRegisteredList();
-    fetchModels();
-    toast("Downloaded local model: " + modelId);
-  }).catch(function(err) {
-    localRuntimeLoading = false;
-    renderLocalRuntimePanel();
-    toast("Could not download local model: " + (err.message || ""));
-  });
-});
 
 document.getElementById("cli-save").addEventListener("click", function() {
   var name = document.getElementById("cli-name").value.trim();

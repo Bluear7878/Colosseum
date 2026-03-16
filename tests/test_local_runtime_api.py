@@ -16,11 +16,12 @@ class FakeLocalRuntimeService:
         )
 
     def update_settings(self, update) -> LocalRuntimeStatus:
+        indices = update.selected_gpu_indices if update.selected_gpu_indices is not None else []
         return LocalRuntimeStatus(
             ollama_installed=True,
             runtime_running=True,
-            selected_gpu_indices=[0, 1] if update.gpu_count == 2 else [],
-            selected_gpu_count=2 if update.gpu_count == 2 else 0,
+            selected_gpu_indices=indices,
+            selected_gpu_count=len(indices),
             installed_models=["llama3.3:latest"],
             installed_models_known=True,
         )
@@ -49,7 +50,7 @@ def test_local_runtime_api_endpoints(monkeypatch):
     assert status_response.status_code == 200
     assert status_response.json()["runtime_running"] is True
 
-    config_response = client.post("/local-runtime/config", json={"gpu_count": 2})
+    config_response = client.post("/local-runtime/config", json={"selected_gpu_indices": [0, 1]})
     assert config_response.status_code == 200
     assert config_response.json()["selected_gpu_count"] == 2
 

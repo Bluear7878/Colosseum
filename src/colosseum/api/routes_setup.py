@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from colosseum.core.models import (
     LocalModelDownloadRequest,
     LocalModelDownloadResult,
+    LocalModelFitResult,
     LocalRuntimeConfigUpdate,
     LocalRuntimeStatus,
 )
@@ -89,6 +90,15 @@ async def download_local_model(
     if not result.success:
         raise HTTPException(status_code=500, detail=result.message)
     return result
+
+
+@router.get("/local-models/fit-check", response_model=LocalModelFitResult)
+async def check_local_model_fit(model: str) -> LocalModelFitResult:
+    """Check whether a local model can run on current hardware using llmfit."""
+    if not model or not model.strip():
+        raise HTTPException(status_code=422, detail="model query parameter is required.")
+    service = LocalRuntimeService()
+    return await asyncio.to_thread(service.check_model_fit, model)
 
 
 @router.post("/setup/auth/{tool_name}")

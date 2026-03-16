@@ -119,34 +119,6 @@
 	        <input id="cli-quota-key" class="arena-input-sm" placeholder="Quota key (optional for paid models)"/>
 	      </div>
 	      <p id="cli-help" class="quota-help">Register a customer model as a debate participant. Paid custom models can use the same quota tracker.</p>
-	      <div id="local-runtime-panel" class="local-runtime-panel hidden">
-	        <div class="local-runtime-head">
-	          <div>
-	            <h3 class="quota-title">Managed Local Runtime</h3>
-	            <p id="local-runtime-note" class="quota-copy">
-	              Colosseum runs local Ollama-backed models through a dedicated runtime so GPU allocation and model downloads stay consistent.
-	            </p>
-	          </div>
-	          <button id="local-runtime-refresh" class="btn-save btn-sm" type="button">Refresh runtime</button>
-	        </div>
-	        <div id="local-runtime-summary" class="local-runtime-summary"></div>
-	        <div class="local-runtime-controls">
-	          <div class="local-runtime-control">
-	            <label class="label" for="local-gpu-mode">GPU allocation</label>
-	            <select id="local-gpu-mode" class="arena-input-sm"></select>
-	          </div>
-	          <button id="local-runtime-apply" class="btn-gold btn-sm" type="button">Apply &amp; restart runtime</button>
-	        </div>
-	        <div class="local-runtime-model">
-	          <label class="label">Current Model Availability</label>
-	          <div id="local-model-availability" class="local-model-availability">
-	            Enter a local model id to check whether it is already installed.
-	          </div>
-	          <div class="local-runtime-actions">
-	            <button id="local-model-download" class="btn-save btn-sm hidden" type="button">Download model</button>
-	          </div>
-	        </div>
-	      </div>
 	      <button id="cli-save" class="btn-gold btn-sm">Register</button>
 	    </div>
     <div id="registered-list" class="registered-list"></div>

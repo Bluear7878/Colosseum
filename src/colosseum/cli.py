@@ -40,6 +40,7 @@ from colosseum.core.models import (
     JudgeConfig,
     JudgeMode,
     LocalRuntimeConfigUpdate,
+    ProviderConfig,
     RunCreateRequest,
     TaskSpec,
     TaskType,
@@ -1164,6 +1165,28 @@ def _parse_gladiator(spec: str) -> dict:
     )
 
 
+def _parse_provider_spec(spec: str) -> ProviderConfig:
+    """Parse a provider spec like 'claude:claude-opus-4-6' into a ProviderConfig."""
+    type_map = {
+        "claude": "claude_cli",
+        "codex": "codex_cli",
+        "gemini": "gemini_cli",
+        "ollama": "ollama",
+        "mock": "mock",
+    }
+    if ":" not in spec:
+        raise ValueError(
+            f"Invalid judge spec '{spec}'. Use format: provider:model "
+            f"(e.g. claude:claude-opus-4-6)"
+        )
+    provider, model = spec.split(":", 1)
+    ptype = type_map.get(provider, "command")
+    kwargs: dict = {"type": ptype, "model": model}
+    if ptype in ("ollama", "huggingface_local"):
+        kwargs["ollama_model"] = model
+    return ProviderConfig(**kwargs)
+
+
 def cmd_monitor(args: argparse.Namespace) -> None:
     """Open the live monitor dashboard for an active debate."""
     from colosseum.monitor import run_monitor
@@ -1211,6 +1234,9 @@ def cmd_debate(args: argparse.Namespace) -> None:
     json_output = args.json_output
     use_monitor = getattr(args, "monitor", False)
     use_evidence_based_judging = not getattr(args, "disable_evidence_judging", False)
+    judge_spec = getattr(args, "judge", None)
+    file_paths = getattr(args, "files", None) or []
+    dir_path = getattr(args, "dir", None)
 
     # --mock flag overrides -g
     if args.mock:
@@ -1277,7 +1303,14 @@ def cmd_debate(args: argparse.Namespace) -> None:
             if use_evidence_based_judging
             else "Evidence shown, but not used as a hard judging gate"
         )
-        print(f"  {BOLD}Judge Policy:{RST} {evidence_policy_label}")
+        judge_label = judge_spec if judge_spec else f"Automated ({evidence_policy_label})"
+        print(f"  {BOLD}Judge:{RST} {judge_label}")
+        if file_paths or dir_path:
+            print(f"  {BOLD}Context:{RST}")
+            if dir_path:
+                print(f"    {DIM}dir:{RST}  {dir_path}")
+            for fp in file_paths:
+                print(f"    {DIM}file:{RST} {fp}")
         print(f"  {BOLD}Gladiators:{RST}")
         for a in agents:
             tier_tag = ""
@@ -1294,6 +1327,54 @@ def cmd_debate(args: argparse.Namespace) -> None:
             print(f"    {GOLD}{_display_label(a)}{RST}{tier_tag}")
         print()
 
+    # Build context sources
+    context_sources: list[ContextSourceInput] = [
+        ContextSourceInput(
+            source_id="topic",
+            kind=ContextSourceKind.INLINE_TEXT,
+            label="Debate topic",
+            content=topic,
+        )
+    ]
+    if dir_path:
+        context_sources.append(
+            ContextSourceInput(
+                source_id="project_dir",
+                kind=ContextSourceKind.LOCAL_DIRECTORY,
+                label=os.path.basename(dir_path.rstrip("/\\")) or dir_path,
+                path=dir_path,
+            )
+        )
+    for i, fp in enumerate(file_paths):
+        context_sources.append(
+            ContextSourceInput(
+                source_id=f"file_{i}",
+                kind=ContextSourceKind.LOCAL_FILE,
+                label=os.path.basename(fp),
+                path=fp,
+            )
+        )
+
+    # Build judge config
+    if judge_spec:
+        try:
+            judge_provider = _parse_provider_spec(judge_spec)
+        except ValueError as e:
+            print(f"  {RED}{e}{RST}\n")
+            sys.exit(1)
+        judge_config = JudgeConfig(
+            mode=JudgeMode.AI,
+            provider=judge_provider,
+            minimum_confidence_to_stop=profile["minimum_confidence_to_stop"],
+            use_evidence_based_judging=use_evidence_based_judging,
+        )
+    else:
+        judge_config = JudgeConfig(
+            mode=JudgeMode.AUTOMATED,
+            minimum_confidence_to_stop=profile["minimum_confidence_to_stop"],
+            use_evidence_based_judging=use_evidence_based_judging,
+        )
+
     # Build request
     request = RunCreateRequest(
         project_name="Colosseum",
@@ -1303,20 +1384,9 @@ def cmd_debate(args: argparse.Namespace) -> None:
             problem_statement=topic,
             task_type=TaskType.RESEARCH_DESIGN,
         ),
-        context_sources=[
-            ContextSourceInput(
-                source_id="topic",
-                kind=ContextSourceKind.INLINE_TEXT,
-                label="Debate topic",
-                content=topic,
-            )
-        ],
+        context_sources=context_sources,
         agents=agents,
-        judge=JudgeConfig(
-            mode=JudgeMode.AUTOMATED,
-            minimum_confidence_to_stop=profile["minimum_confidence_to_stop"],
-            use_evidence_based_judging=use_evidence_based_judging,
-        ),
+        judge=judge_config,
         budget_policy=BudgetPolicy(
             max_rounds=depth,
             min_rounds=profile["min_rounds"],
@@ -1965,6 +2035,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Keep surfacing evidence, but do not let thin evidence force more rounds or gate the verdict.",
+    )
+    p_debate.add_argument(
+        "-j",
+        "--judge",
+        default=None,
+        metavar="PROVIDER:MODEL",
+        help="AI judge model spec (e.g. -j claude:claude-opus-4-6). Omit to use automated judging.",
+    )
+    p_debate.add_argument(
+        "-f",
+        "--files",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help="One or more files to include as context for the debate.",
+    )
+    p_debate.add_argument(
+        "--dir",
+        default=None,
+        metavar="PATH",
+        help="Project directory to include as context for the debate.",
     )
 
     # monitor

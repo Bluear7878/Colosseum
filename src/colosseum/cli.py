@@ -2312,6 +2312,8 @@ def cmd_review(args: argparse.Namespace) -> None:
     diff_flag = getattr(args, "diff", False)
     rules_path = getattr(args, "rules", None)
     phase_letters = getattr(args, "phases", None)
+    timeout_seconds = args.timeout or 0
+    response_language = getattr(args, "lang", None) or "auto"
 
     # --mock flag
     if args.mock:
@@ -2351,10 +2353,10 @@ def cmd_review(args: argparse.Namespace) -> None:
             if upper in _PHASE_LETTER_MAP:
                 phases.append(_PHASE_LETTER_MAP[upper])
             else:
-                print(f"  {RED}Unknown phase '{letter}'. Use A, B, C, D, or E.{RST}\n")
+                print(f"  {RED}Unknown phase '{letter}'. Use A, B, C, D, E, or F.{RST}\n")
                 sys.exit(1)
     else:
-        phases = list(ReviewPhase)
+        phases = [p for p in ReviewPhase if p != ReviewPhase.RED_TEAM]
 
     # Git diff
     git_diff = None
@@ -2457,10 +2459,13 @@ def cmd_review(args: argparse.Namespace) -> None:
             per_agent_message_limit=1,
             min_novelty_threshold=profile["min_novelty_threshold"],
             convergence_threshold=profile["convergence_threshold"],
+            planning_timeout_seconds=timeout_seconds,
+            round_timeout_seconds=timeout_seconds,
         ),
         phases=phases,
         git_diff=git_diff,
         rules_context=rules_context,
+        response_language=response_language,
     )
 
     orch = get_review_orchestrator()
@@ -2482,6 +2487,12 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(f"  {BOLD}Diff:{RST} included ({len(git_diff)} chars)")
     if rules_context:
         print(f"  {BOLD}Rules:{RST} loaded ({len(rules_context)} chars)")
+    if timeout_seconds:
+        print(f"  {BOLD}Timeout:{RST} {timeout_seconds}s per phase")
+    else:
+        print(f"  {BOLD}Timeout:{RST} none")
+    if response_language != "auto":
+        print(f"  {BOLD}Language:{RST} {response_language}")
     print(f"  {BOLD}Gladiators:{RST}")
     for a in agents:
         print(f"    {GOLD}{_display_label(a)}{RST}")
@@ -2838,6 +2849,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PHASE",
         help="Review phases: A (rules) B (impl) C (arch) D (security) E (tests) F (red-team). Default: A-E",
+    )
+    p_review.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help="Time limit per phase in seconds. Omit for no limit.",
+    )
+    p_review.add_argument(
+        "--lang",
+        default=None,
+        metavar="LANGUAGE",
+        help="Response language (e.g. ko, en, ja). Default: auto-detect.",
     )
     p_review.add_argument(
         "-j",

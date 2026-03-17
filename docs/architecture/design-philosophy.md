@@ -34,6 +34,10 @@ An agent is an execution unit with provider/runtime policy. A persona is a reusa
 
 Validation should fail early on malformed requests, missing context paths, invalid judge actions, and impossible budget settings. Silent fallback is acceptable only when it is explicit and traceable.
 
+### 8. Cost transparency
+
+Token usage and estimated costs should be tracked and surfaced. Users should always know what a run cost. Real token counts are preferred over estimates; when unavailable, fall back to `len//4` with clear indication.
+
 ## Non-Goals
 
 - Hidden magic that changes verdict logic without an artifact trail.

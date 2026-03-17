@@ -67,6 +67,7 @@ def complete_payload(run: ExperimentRun) -> dict[str, Any]:
             "total_tokens": usage.total_tokens,
             "prompt_tokens": usage.prompt_tokens,
             "completion_tokens": usage.completion_tokens,
+            "estimated_cost_usd": usage.estimated_cost_usd,
         }
         for actor_id, usage in run.budget_ledger.by_actor.items()
     }
@@ -75,6 +76,7 @@ def complete_payload(run: ExperimentRun) -> dict[str, Any]:
         "phase": "complete",
         "verdict": verdict_data,
         "budget_total": run.budget_ledger.total.total_tokens,
+        "budget_total_cost_usd": run.budget_ledger.total.estimated_cost_usd,
         "budget_by_actor": budget_by_actor,
         "final_report": final_report_data,
     }

@@ -54,7 +54,17 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         duration = (time.perf_counter() - start) * 1000
         status = response.status_code
 
-        if status >= 400:
+        if status == 422 and path.startswith("/runs"):
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+            logger.warning(
+                "<<< %s %s → 422 (%.0fms) VALIDATION ERROR: %s",
+                method, path, duration, body.decode("utf-8", errors="replace")
+            )
+            from starlette.responses import Response as _Resp
+            return _Resp(content=body, status_code=422, media_type="application/json")
+        elif status >= 400:
             logger.warning("<<< %s %s → %d (%.0fms)", method, path, status, duration)
         else:
             logger.info("<<< %s %s → %d (%.0fms)", method, path, status, duration)

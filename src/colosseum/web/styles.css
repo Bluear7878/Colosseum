@@ -1256,6 +1256,15 @@ h1 {
   font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
 }
 
+.usage-card-cost {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--gold);
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
 .usage-card-detail {
   font-size: 0.76rem;
   color: var(--sand-muted);

@@ -168,7 +168,8 @@ def _probe_model(cli_cmd: str, model: str, provider: str) -> bool:
         if provider == "claude":
             cmd = [cli_cmd, "-p", "--model", model, "--max-turns", "1", "say ok"]
         elif provider == "codex":
-            cmd = [cli_cmd, "--model", model, "-q", "say ok"]
+            from colosseum.providers.cli_adapters import detect_codex_exec_flags
+            cmd = [cli_cmd, "exec"] + detect_codex_exec_flags() + ["--model", model, "say ok"]
         elif provider == "gemini":
             cmd = [cli_cmd, "--model", model, "-p", "say ok"]
         else:
@@ -375,11 +376,24 @@ def probe_all_models() -> list[dict]:
 
 
 def discover_models() -> list[dict]:
-    """Return probed models if available, otherwise build from fallback."""
-    if _probed_models is not None:
-        return _probed_models
+    """Return probed models if available, otherwise build from fallback.
 
-    # Fast fallback (no probing yet)
+    Ollama models are always re-checked live so newly started runtimes or
+    newly pulled models are reflected without a full server restart.
+    """
+    if _probed_models is not None:
+        # Start from probed paid models; re-check Ollama live every call.
+        paid = [m for m in _probed_models if m.get("tier") != "free"]
+        seen_ids = {m["id"] for m in paid}
+        ollama_models = _discover_ollama_models()
+        if ollama_models:
+            for m in ollama_models:
+                if m["id"] not in seen_ids:
+                    paid.append(m)
+                    seen_ids.add(m["id"])
+        return paid
+
+    # Fast fallback (probing hasn't completed yet)
     models: list[dict] = []
     seen_ids: set[str] = set()
 
@@ -2029,7 +2043,7 @@ def _verdict(run):
         print(f"\n  {BOLD}Agent Statistics{RST}")
         print(f"  {'─' * 58}")
         for stat in agent_stats:
-            cost_str = f"${stat['cost']:.4f}" if stat["cost"] > 0 else "—"
+            cost_str = f"${stat['cost']:.4f}"
             print(
                 f"    {CYAN}{BOLD}{stat['name']}{RST}"
             )
@@ -2062,9 +2076,8 @@ def _verdict(run):
     total_tok = run.budget_ledger.total.total_tokens
     total_cost = run.budget_ledger.total.estimated_cost_usd
     budget_tok = run.budget_policy.total_token_budget
-    cost_summary = f"  Total cost: ${total_cost:.4f}" if total_cost > 0 else ""
     print(f"\n    {DIM}Confidence: {v.confidence:.2f}  Stop: {v.stop_reason}{RST}")
-    print(f"    {DIM}Total: {total_tok}/{budget_tok} tokens{cost_summary}  Run ID: {run.run_id}{RST}\n")
+    print(f"    {DIM}Total: {total_tok:,}/{budget_tok:,} tokens  Cost: ${total_cost:.4f}  Run ID: {run.run_id}{RST}\n")
 
 
 def _show_human_packet(run) -> None:
@@ -2404,8 +2417,7 @@ def _review_summary(report):
     # Usage
     total_tok = report.total_usage.total_tokens
     total_cost = report.total_usage.estimated_cost_usd
-    cost_str = f"  ${total_cost:.4f}" if total_cost > 0 else ""
-    print(f"\n    {DIM}Tokens: {total_tok}{cost_str}  Phases: {len(report.phase_results)}{RST}")
+    print(f"\n    {DIM}Tokens: {total_tok:,}  Cost: ${total_cost:.4f}  Phases: {len(report.phase_results)}{RST}")
     print(f"    {DIM}Review ID: {report.review_id}{RST}\n")
 
 

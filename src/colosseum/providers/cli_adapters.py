@@ -23,6 +23,10 @@ class CliProviderAdapter(ABC):
     def __init__(self, model: str = "") -> None:
         self.model = str(model or "").strip()
 
+    def call_with_usage(self, prompt: str) -> tuple[str, dict]:
+        """Return (content, usage_info). Base implementation has no usage info."""
+        return self.call(prompt), {}
+
     def call(self, prompt: str) -> str:
         """Return the raw model text for *prompt*.
 
@@ -102,16 +106,34 @@ class ClaudeCliAdapter(CliProviderAdapter):
 
     provider_name = "claude"
 
-    def call(self, prompt: str) -> str:
+    def call_with_usage(self, prompt: str) -> tuple[str, dict]:
         assert isinstance(prompt, str), "Prompt must be a string."
         primary = self._run(self.build_command(prompt))
-        raw = self._unwrap_result(primary.stdout)
-        if primary.returncode == 0 and raw:
-            return raw
-
+        usage: dict = {}
+        content = ""
+        stripped = primary.stdout.strip()
+        if stripped:
+            try:
+                envelope = json.loads(stripped)
+                if isinstance(envelope, dict):
+                    if envelope.get("total_input_tokens"):
+                        usage["prompt_tokens"] = envelope["total_input_tokens"]
+                    if envelope.get("total_output_tokens"):
+                        usage["completion_tokens"] = envelope["total_output_tokens"]
+                    if envelope.get("cost_usd"):
+                        usage["cost_usd"] = envelope["cost_usd"]
+            except json.JSONDecodeError:
+                pass
+            content = self._unwrap_result(primary.stdout)
+        if primary.returncode == 0 and content:
+            return content, usage
         fallback = self._run(self._fallback_command(prompt))
         fallback_raw = fallback.stdout.strip()
-        return fallback_raw or raw
+        return fallback_raw or content, usage
+
+    def call(self, prompt: str) -> str:
+        content, _ = self.call_with_usage(prompt)
+        return content
 
     def build_command(self, prompt: str) -> list[str]:
         command = [
@@ -153,6 +175,45 @@ class ClaudeCliAdapter(CliProviderAdapter):
         return env
 
 
+_codex_exec_flags_cache: list[str] | None = None
+
+
+def detect_codex_exec_flags() -> list[str]:
+    """Return the non-interactive safety flags supported by the installed codex exec.
+
+    Runs ``codex exec --help`` once and caches the result.  Falls back to the
+    empty list when codex is not installed or the help output cannot be parsed.
+    """
+    global _codex_exec_flags_cache
+    if _codex_exec_flags_cache is not None:
+        return _codex_exec_flags_cache
+
+    import shutil
+
+    if not shutil.which("codex"):
+        _codex_exec_flags_cache = []
+        return _codex_exec_flags_cache
+
+    try:
+        result = subprocess.run(
+            ["codex", "exec", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        help_text = result.stdout + result.stderr
+    except Exception:
+        _codex_exec_flags_cache = []
+        return _codex_exec_flags_cache
+
+    flags: list[str] = []
+    if "--dangerously-bypass-approvals-and-sandbox" in help_text:
+        flags.append("--dangerously-bypass-approvals-and-sandbox")
+
+    _codex_exec_flags_cache = flags
+    return flags
+
+
 class CodexCliAdapter(CliProviderAdapter):
     """Codex adapter that reads the clean response from an output file."""
 
@@ -183,11 +244,7 @@ class CodexCliAdapter(CliProviderAdapter):
 
     def build_command(self, prompt: str) -> list[str]:
         del prompt
-        command = [
-            "codex",
-            "exec",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ]
+        command = ["codex", "exec"] + detect_codex_exec_flags()
         if self.model:
             command.extend(["--model", self.model])
         return command

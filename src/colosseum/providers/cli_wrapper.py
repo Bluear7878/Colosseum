@@ -243,7 +243,7 @@ def main():
         if args.provider in {"ollama", "huggingface"} and not effective_model:
             effective_model = "llama3.3"
         adapter = build_cli_adapter(args.provider, model=effective_model)
-        raw = adapter.call(prompt)
+        raw, usage = adapter.call_with_usage(prompt)
     except FileNotFoundError:
         print(
             json.dumps(
@@ -271,6 +271,8 @@ def main():
     parsed = parse_response(raw)
     if "content" not in parsed:
         parsed["content"] = json.dumps(parsed, indent=2)
+    if usage:
+        parsed["_usage"] = usage
 
     print(json.dumps(parsed))
 

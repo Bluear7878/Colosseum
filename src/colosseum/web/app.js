@@ -1167,13 +1167,19 @@ function refreshGladiatorsFromAPI() {
       });
       Object.keys(ollamaFamilies).forEach(function(family) {
         var displayName = family.charAt(0).toUpperCase() + family.slice(1);
+        var familyVariants = ollamaFamilies[family];
+        // Prepend "Auto" variant — resolves to the first installed model in this family
+        var autoVariant = { model: familyVariants[0].model, label: "Auto", type: "huggingface_local" };
+        var variants = familyVariants.length > 1
+          ? [autoVariant].concat(familyVariants)
+          : familyVariants;
         newGladiators.push({
           id: family,
           name: displayName,
           icon: familyIcons[family] || "\uD83E\uDD16",
           tier: "free",
           desc: "ollama run <model>",
-          variants: ollamaFamilies[family]
+          variants: variants
         });
       });
     } else {
@@ -1946,6 +1952,17 @@ function buildPaidProviderPolicy() {
             fallback.variant,
             fallback.gladiator.tier
           );
+    } else {
+      // Variant not in GLADIATORS yet (e.g. Ollama not running) — build provider directly
+      var modelStr = fallbackModel || DEFAULT_FALLBACK_MODEL;
+      var ollamaModel = modelStr.replace(/^ollama:/, "");
+      policy.fallback_provider = {
+        type: "huggingface_local",
+        model: modelStr,
+        ollama_model: ollamaModel,
+        hf_model: ollamaModel,
+        billing_tier: "free"
+      };
     }
   }
   return policy;
@@ -2311,6 +2328,7 @@ function handleSSEEvent(evt) {
     if (currentRunId) {
       window.setTimeout(function() { openReport(currentRunId); }, 600);
     }
+    fetchQuotaStates();
     var btn = document.getElementById("start-btn");
     btn.disabled = false;
     btn.textContent = "FIGHT!";
@@ -2337,6 +2355,7 @@ function handleSSEEvent(evt) {
     liveRunData.budget_by_actor = evt.budget_by_actor || {};
     liveRunData.final_report = evt.final_report || null;
     appendLiveEntry("Debate complete!", "verdict");
+    fetchQuotaStates();
     if (currentRunId) {
       setBattleNote("Battle finished. Opening the full report...", false);
       window.setTimeout(function() { openReport(currentRunId); }, 600);
@@ -2351,6 +2370,7 @@ function handleSSEEvent(evt) {
     cancelDebateBtn.classList.add("hidden");
     appendLiveEntry("Error: " + (evt.message || "Unknown error"), "error");
     setBattleNote("The run ended with an error. Try reducing context size or switching to fewer models.", false);
+    fetchQuotaStates();
   } else {
     appendLiveEntry(phase + (evt.message ? ": " + evt.message : ""), "debate");
   }
@@ -2383,9 +2403,11 @@ function renderLiveResult() {
       var u = budgetByActor[k];
       var total = u.total_tokens || 0;
       var pct = Math.round((total / maxTokens) * 100);
+      var costVal = u.estimated_cost_usd || 0;
+      var costHtml = costVal > 0 ? '<div class="usage-card-cost">$' + costVal.toFixed(4) + '</div>' : '';
       return '<div class="usage-card">' +
         '<div class="usage-card-name">' + esc(k) + '</div>' +
-        '<div class="usage-card-total">' + total.toLocaleString() + '</div>' +
+        '<div class="usage-card-total">' + total.toLocaleString() + costHtml + '</div>' +
         '<div class="usage-card-detail">' +
           'Prompt: ' + (u.prompt_tokens || 0).toLocaleString() + '<br>' +
           'Completion: ' + (u.completion_tokens || 0).toLocaleString() +
@@ -2696,11 +2718,12 @@ function renderUsage(run) {
         r.agent_usages.forEach(function(au) {
           var key = au.agent_id || au.display_name || "Unknown";
           if (!agentUsage[key]) {
-            agentUsage[key] = { name: au.display_name || key, total: 0, prompt: 0, completion: 0 };
+            agentUsage[key] = { name: au.display_name || key, total: 0, prompt: 0, completion: 0, cost: 0 };
           }
           agentUsage[key].total += (au.total_tokens || 0);
           agentUsage[key].prompt += (au.prompt_tokens || 0);
           agentUsage[key].completion += (au.completion_tokens || 0);
+          agentUsage[key].cost += (au.estimated_cost_usd || 0);
         });
       }
     });
@@ -2714,7 +2737,8 @@ function renderUsage(run) {
         name: au.display_name || key,
         total: au.total_tokens || 0,
         prompt: au.prompt_tokens || 0,
-        completion: au.completion_tokens || 0
+        completion: au.completion_tokens || 0,
+        cost: au.estimated_cost_usd || 0
       };
     });
   }
@@ -2732,9 +2756,10 @@ function renderUsage(run) {
   grid.innerHTML = keys.map(function(k) {
     var u = agentUsage[k];
     var pct = Math.round((u.total / maxTokens) * 100);
+    var costHtml = u.cost > 0 ? '<div class="usage-card-cost">$' + u.cost.toFixed(4) + '</div>' : '';
     return '<div class="usage-card">' +
       '<div class="usage-card-name">' + esc(u.name) + '</div>' +
-      '<div class="usage-card-total">' + u.total.toLocaleString() + '</div>' +
+      '<div class="usage-card-total">' + u.total.toLocaleString() + costHtml + '</div>' +
       '<div class="usage-card-detail">' +
         'Prompt: ' + u.prompt.toLocaleString() + '<br>' +
         'Completion: ' + u.completion.toLocaleString() +

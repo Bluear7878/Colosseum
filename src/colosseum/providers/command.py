@@ -120,14 +120,26 @@ class CommandProvider(BaseProvider):
         error_text = str(parsed["json_payload"].get("error", "")) if parsed["json_payload"] else ""
         if self._looks_like_quota_error(f"{raw}\n{error_text}\n{stderr.decode('utf-8')}"):
             raise ProviderQuotaExceededError(error_text or raw or "Provider quota exhausted.")
-        prompt_tok = max(32, len(instructions) // 4)
-        completion_tok = max(32, len(raw) // 4)
-        cost = 0.0
-        if self.pricing:
-            cost = (
-                prompt_tok * self.pricing.prompt_cost_per_1k_tokens / 1000
-                + completion_tok * self.pricing.completion_cost_per_1k_tokens / 1000
-            )
+        # Prefer real token counts from the wrapper's _usage field (e.g. Claude CLI JSON envelope)
+        usage_info = (parsed["json_payload"] or {}).get("_usage", {})
+        if usage_info.get("prompt_tokens"):
+            prompt_tok = usage_info["prompt_tokens"]
+            completion_tok = usage_info.get("completion_tokens", max(32, len(raw) // 4))
+            cost = float(usage_info.get("cost_usd") or 0.0)
+            if cost == 0.0 and self.pricing:
+                cost = (
+                    prompt_tok * self.pricing.prompt_cost_per_1k_tokens / 1000
+                    + completion_tok * self.pricing.completion_cost_per_1k_tokens / 1000
+                )
+        else:
+            prompt_tok = max(32, len(instructions) // 4)
+            completion_tok = max(32, len(raw) // 4)
+            cost = 0.0
+            if self.pricing:
+                cost = (
+                    prompt_tok * self.pricing.prompt_cost_per_1k_tokens / 1000
+                    + completion_tok * self.pricing.completion_cost_per_1k_tokens / 1000
+                )
         usage = UsageMetrics(
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,

@@ -121,6 +121,9 @@ def build_prompt(data: dict) -> str:
         prompt += "\n\nIMPORTANT: Your focus_areas and reasoning must be directly tied to the debate topic. "
         prompt += "Only continue the debate if agents are producing new, topic-relevant evidence. "
         prompt += "Do not invent new round labels."
+        judge_instructions = metadata.get("judge_custom_instructions", "")
+        if judge_instructions:
+            prompt += "\n\nJUDGE CUSTOM INSTRUCTIONS (from the user):\n" + judge_instructions
     elif operation == "synthesis":
         prompt += "summary, evidence_basis (list), assumptions (list), architecture (list), implementation_strategy (list), "
         prompt += (
@@ -141,6 +144,9 @@ def build_prompt(data: dict) -> str:
         prompt += "\n\nIMPORTANT: final_answer must directly answer the user's question, not just describe the debate. "
         prompt += "Explain what the user should do or believe after reading the debate. "
         prompt += "Keep every field grounded in the actual debate transcript, adopted arguments, and verdict."
+        report_instructions = metadata.get("report_instructions", "")
+        if report_instructions:
+            prompt += "\n\nREPORT CUSTOM INSTRUCTIONS (from the user):\n" + report_instructions
 
     prompt += "\n\nRule: prefer objective evidence from the provided context bundle. If a claim is inferential or uncertain, say so."
     prompt += "\n\nReturn ONLY valid JSON, no markdown fences or extra text."

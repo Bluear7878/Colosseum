@@ -521,6 +521,7 @@ class ReportSynthesizer:
                 "debate_resolutions": debate_resolutions,
                 "precomputed_final_answer": final_answer_override,
                 "round_count": len(run.debate_rounds),
+                "report_instructions": run.report_instructions or "",
             },
         )
         payload = execution.result.json_payload

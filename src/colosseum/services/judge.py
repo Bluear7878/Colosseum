@@ -417,6 +417,7 @@ class JudgeService:
                 "evidence_support": self._evidence_support(run),
                 "use_evidence_based_judging": run.judge.use_evidence_based_judging,
                 "suggested_agenda": suggested_agenda.model_dump(mode="json"),
+                "judge_custom_instructions": run.judge.custom_instructions or "",
             },
         )
         result = execution.result
@@ -602,6 +603,7 @@ class JudgeService:
                 "run_id": run.run_id,
                 "task_title": run.task.title,
                 "response_language": run.response_language,
+                "judge_custom_instructions": run.judge.custom_instructions or "",
             },
         )
         result = execution.result

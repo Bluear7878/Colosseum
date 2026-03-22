@@ -1288,6 +1288,20 @@ if (evidenceJudgingToggle) {
   });
 }
 
+/* ── Judge criteria chips ── */
+document.querySelectorAll(".criteria-chip").forEach(function(chip) {
+  chip.addEventListener("click", function() {
+    var textarea = document.getElementById("judge-instructions");
+    if (!textarea) return;
+    var text = chip.dataset.criteria || "";
+    if (!text) return;
+    var current = textarea.value.trim();
+    if (current && current.indexOf(text) !== -1) return; // already present
+    textarea.value = current ? current + "\n" + text : text;
+    chip.classList.toggle("criteria-chip-active");
+  });
+});
+
 function updateSearchPreferenceUI() {
   if (searchToggle) searchToggle.checked = !!encourageInternetSearch;
   if (!searchNote) return;
@@ -2300,8 +2314,10 @@ function buildPayload() {
       provider: judgeProvider || undefined,
       minimum_confidence_to_stop: (DEPTH_PROFILES[depth] || DEPTH_PROFILES[3]).confidence,
       prefer_merged_plan_on_close_scores: true,
-      use_evidence_based_judging: useEvidenceBasedJudging
+      use_evidence_based_judging: useEvidenceBasedJudging,
+      custom_instructions: (document.getElementById("judge-instructions") || {}).value || ""
     },
+    report_instructions: (document.getElementById("report-instructions") || {}).value || "",
     paid_provider_policy: buildPaidProviderPolicy(),
     budget_policy: (function() {
       var t = timeoutNolimit.checked ? 0 : (parseInt(timeoutInput.value) || 0);

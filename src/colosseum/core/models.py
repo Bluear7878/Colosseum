@@ -690,6 +690,7 @@ class JudgeConfig(BaseModel):
     prefer_merged_plan_on_close_scores: bool = True
     allow_early_finalization: bool = False
     use_evidence_based_judging: bool = True
+    custom_instructions: str = ""  # Free-text instructions for the judge
 
 
 class JudgeDecision(BaseModel):
@@ -1047,6 +1048,7 @@ class ExperimentRun(BaseModel):
     project_name: str
     encourage_internet_search: bool = False
     response_language: str = "auto"
+    report_instructions: str = ""
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     status: RunStatus = RunStatus.PENDING
@@ -1132,6 +1134,7 @@ class RunCreateRequest(BaseModel):
     project_name: str = "Colosseum"
     encourage_internet_search: bool = False
     response_language: str = "auto"
+    report_instructions: str = ""  # Custom instructions for final report generation
     task: TaskSpec
     context_sources: list[ContextSourceInput] = Field(default_factory=list)
     agents: list[AgentConfig]

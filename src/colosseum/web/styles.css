@@ -648,6 +648,28 @@ h1 {
   margin-bottom: 4px;
 }
 
+/* ── Judge Instructions ── */
+.judge-instructions-wrap { margin-top: 10px; }
+.judge-instructions-wrap textarea { width: 100%; font-size: 0.82rem; }
+.judge-criteria-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.criteria-chip {
+  padding: 4px 10px;
+  border: 1px solid rgba(212, 164, 76, 0.2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sand-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.criteria-chip:hover { border-color: var(--gold); color: var(--sand); }
+.criteria-chip-active { border-color: var(--gold); background: rgba(212, 164, 76, 0.12); color: var(--gold-light); }
+
+/* ── Report Config ── */
+.report-config-section { margin: 14px 0; }
+.report-config-section textarea { width: 100%; font-size: 0.82rem; }
+
 .judge-policy-toggle {
   margin-top: 12px;
 }

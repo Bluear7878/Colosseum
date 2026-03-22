@@ -140,6 +140,19 @@
         <p id="evidence-judging-note" class="judge-note judge-policy-note">
           When enabled, thin evidence can force another round and evidence grounding weighs more heavily in scoring and finalization.
         </p>
+        <div class="judge-instructions-wrap">
+          <label class="label" for="judge-instructions">Judge Instructions (optional)</label>
+          <div class="judge-criteria-chips">
+            <button class="criteria-chip" data-criteria="Prioritize practicality and feasibility">Practicality</button>
+            <button class="criteria-chip" data-criteria="Focus on creativity and novelty of ideas">Creativity</button>
+            <button class="criteria-chip" data-criteria="Emphasize cost-efficiency and ROI">Cost Efficiency</button>
+            <button class="criteria-chip" data-criteria="Prioritize technical depth and rigor">Technical Depth</button>
+            <button class="criteria-chip" data-criteria="Focus on security and risk mitigation">Security First</button>
+            <button class="criteria-chip" data-criteria="Consider user experience and adoption">User Experience</button>
+          </div>
+          <textarea id="judge-instructions" class="arena-input" rows="3"
+            placeholder="Tell the judge what to focus on, how to evaluate, or any specific criteria...&#10;e.g. 'Evaluate from a startup perspective with limited budget. Prioritize speed-to-market over perfection.'"></textarea>
+        </div>
       </div>
       <div class="control-group">
         <label class="label">Response Language</label>
@@ -164,6 +177,13 @@
           <button id="mode-result" class="mode-btn" data-mode="result">Results Only</button>
         </div>
       </div>
+    </div>
+
+    <!-- Report configuration -->
+    <div class="report-config-section">
+      <label class="label" for="report-instructions">Final Report Instructions (optional)</label>
+      <textarea id="report-instructions" class="arena-input" rows="3"
+        placeholder="Customize the final report...&#10;e.g. 'Include a concrete action plan with timeline. Write for a non-technical audience. Add risk assessment section.'"></textarea>
     </div>
 
     <div id="timeout-section" class="timeout-section">

@@ -128,7 +128,7 @@ def test_check_model_fit_success(tmp_path, monkeypatch):
     monkeypatch.setattr("colosseum.services.local_runtime.subprocess.Popen", lambda *a, **kw: FakeProc())
 
     # Mock urllib.request.urlopen to simulate health + model response
-    model_resp_data = json.dumps({"fit_level": "Good", "run_mode": "Gpu"}).encode()
+    model_resp_data = json.dumps({"models": [{"fit_level": "Good", "run_mode": "Gpu"}]}).encode()
 
     class FakeResp:
         def __init__(self, data: bytes) -> None:

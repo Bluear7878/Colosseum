@@ -56,6 +56,7 @@ from colosseum.core.models import (
     TaskType,
     humanize_identifier,
 )
+from colosseum.core.pricing import MODEL_PRICING as _MODEL_PRICING
 from colosseum.services.local_runtime import LocalRuntimeService
 
 # ── ANSI colors (no external deps) ──────────────────────────────
@@ -140,23 +141,6 @@ def _build_fallback_models() -> list[dict]:
 
 
 _FALLBACK_MODELS = _build_fallback_models()
-
-# ── Model pricing (USD per 1K tokens: prompt, completion) ─────────────────────
-_MODEL_PRICING: dict[str, tuple[float, float]] = {
-    "claude-opus-4-6":               (0.015,     0.075),
-    "claude-sonnet-4-6":             (0.003,     0.015),
-    "claude-haiku-4-5-20251001":     (0.0008,    0.004),
-    "gpt-5.4":                       (0.0025,    0.010),
-    "gpt-5.3-codex":                 (0.0015,    0.006),
-    "o3":                            (0.002,     0.008),
-    "o4-mini":                       (0.0011,    0.0044),
-    "gemini-3.1-pro-preview":        (0.0025,    0.015),
-    "gemini-3-flash-preview":        (0.00015,   0.0006),
-    "gemini-3.1-flash-lite-preview": (0.000075,  0.0003),
-    "gemini-2.5-pro":                (0.00125,   0.010),
-    "gemini-2.5-flash":              (0.000075,  0.0003),
-    "gemini-2.5-flash-lite":         (0.0000375, 0.00015),
-}
 
 
 # ── Per-provider model probing ────────────────────────────────────
@@ -738,7 +722,6 @@ def _display_label(obj) -> str:
 def _plan_display_label(run: ExperimentRun, plan) -> str:
     agent = next((item for item in run.agents if item.agent_id == plan.agent_id), None)
     return _display_label(agent) if agent else plan.display_name
-    print()
 
 
 def cmd_history(_args: argparse.Namespace) -> None:
@@ -752,15 +735,15 @@ def cmd_history(_args: argparse.Namespace) -> None:
         print("  No battles fought yet.\n")
         return
 
-    completed = sum(1 for r in runs if r.status == "completed")
-    failed = sum(1 for r in runs if r.status == "failed")
+    completed = sum(1 for r in runs if r.status == RunStatus.COMPLETED)
+    failed = sum(1 for r in runs if r.status == RunStatus.FAILED)
     total_tokens = sum(r.total_tokens for r in runs)
 
     print(
         f"  {BOLD}Past Battles{RST}  {DIM}({len(runs)} total: {completed} completed, {failed} failed, {total_tokens} tok){RST}\n"
     )
     for r in runs:
-        status_color = GREEN if r.status == "completed" else RED if r.status == "failed" else GOLD
+        status_color = GREEN if r.status == RunStatus.COMPLETED else RED if r.status == RunStatus.FAILED else GOLD
         verdict = r.verdict_type or "pending"
         print(
             f"    {DIM}{r.run_id[:8]}{RST}  "
@@ -857,6 +840,11 @@ def cmd_delete(args: argparse.Namespace) -> None:
         if count == 0:
             print(f"  {DIM}No runs to delete.{RST}\n")
             return
+        if not getattr(args, "yes", False):
+            confirm = input(f"  Delete all {count} run(s)? [y/N] ").strip().lower()
+            if confirm != "y":
+                print(f"  {DIM}Aborted.{RST}\n")
+                return
         _shutil.rmtree(ARTIFACT_ROOT)
         ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
         print(f"  {GREEN}Deleted all {count} run(s).{RST}\n")
@@ -965,6 +953,13 @@ def _check_tool_status(tool_name: str, info: dict) -> dict:
             status["auth_detail"] = "timeout (may need login)"
         except Exception:
             status["auth_detail"] = "check failed"
+    elif tool_name == "llmfit":
+        # llmfit — local binary, no auth or runtime needed
+        status["auth_ok"] = status["installed"]
+        if not status["installed"]:
+            status["auth_detail"] = "not installed"
+        else:
+            status["auth_detail"] = "installed (no auth required)"
     else:
         # ollama — no auth needed, Colosseum manages a dedicated runtime on demand
         runtime_status = LocalRuntimeService().get_status()
@@ -1141,7 +1136,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
                 else:
                     print(f"    {DIM}Skipped. Run '{info['login']}' later to authenticate.{RST}")
         elif tool_name == "ollama" and status["installed"]:
-            if status["auth_ok"]:
+            runtime_status = LocalRuntimeService().get_status()
+            if runtime_status.runtime_running:
                 print(f"    {GREEN}✓ Running{RST}")
             else:
                 print(f"    {GOLD}⚠ Not running.{RST} Start with: {DIM}ollama serve{RST}")
@@ -1418,12 +1414,10 @@ def cmd_debate(args: argparse.Namespace) -> None:
     profile = DEPTH_PROFILES.get(depth, DEPTH_PROFILES[3])
     depth_label = DEPTH_LABELS.get(depth, "Standard")
 
-    token_budget = profile.get("token_budget", 80000)
-
     if not json_output:
         print(f"  {BOLD}Topic:{RST} {topic}")
         print(
-            f"  {BOLD}Depth:{RST} {depth} ({depth_label})  {DIM}max {depth} rounds, {token_budget} token budget{RST}"
+            f"  {BOLD}Depth:{RST} {depth} ({depth_label})  {DIM}max {depth} rounds{RST}"
         )
         evidence_policy_label = (
             "Evidence-gated judging"
@@ -1508,14 +1502,23 @@ def cmd_debate(args: argparse.Namespace) -> None:
             use_evidence_based_judging=use_evidence_based_judging,
         )
 
+    # New optional args
+    lang = getattr(args, "lang", None) or "auto"
+    internet_search = getattr(args, "internet_search", False)
+    task_type_str = getattr(args, "task_type", None)
+    task_type = TaskType(task_type_str) if task_type_str else TaskType.RESEARCH_DESIGN
+    report_instructions = getattr(args, "report_instructions", None) or ""
+
     # Build request
     request = RunCreateRequest(
         project_name="Colosseum",
-        encourage_internet_search=False,
+        encourage_internet_search=internet_search,
+        response_language=lang,
+        report_instructions=report_instructions,
         task=TaskSpec(
             title=topic[:120],
             problem_statement=topic,
-            task_type=TaskType.RESEARCH_DESIGN,
+            task_type=task_type,
         ),
         context_sources=context_sources,
         agents=agents,
@@ -1523,7 +1526,6 @@ def cmd_debate(args: argparse.Namespace) -> None:
         budget_policy=BudgetPolicy(
             max_rounds=depth,
             min_rounds=profile["min_rounds"],
-            total_token_budget=token_budget,
             per_round_token_limit=12000,
             per_agent_message_limit=1,
             min_novelty_threshold=profile["min_novelty_threshold"],
@@ -1623,6 +1625,9 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
     run = ExperimentRun(
         project_name=request.project_name,
         encourage_internet_search=request.encourage_internet_search,
+        response_language=request.response_language,
+        report_instructions=request.report_instructions,
+        paid_provider_policy=request.paid_provider_policy,
         task=request.task,
         agents=request.agents,
         judge=request.judge,
@@ -1645,6 +1650,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
         },
     )
 
+    spinner = _Spinner()
     try:
         # Phase: context
         if not silent:
@@ -1661,7 +1667,6 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
         bus.emit(
             "phase", {"phase": "planning", "message": "Generating plans...", "status": "planning"}
         )
-        spinner = _Spinner()
         pending_plans = 0
         run.status = RunStatus.PLANNING
         async for event_type, event_data in orch._generate_plans_streaming(run):
@@ -1707,27 +1712,30 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
 
         # === Human Judge Mode ===
         if run.judge.mode == JudgeMode.HUMAN:
+            if silent:
+                raise ValueError(
+                    "Human judge is incompatible with --json mode. "
+                    "Use an AI or automated judge when running with --json."
+                )
             run.pause_for_human(orch.judge_service.build_human_packet(run))
             orch.repository.save_run(run)
             bus.emit(
                 "phase",
                 {"phase": "debate", "message": "Awaiting human judge...", "status": "awaiting_human_judge"},
             )
-            if not silent:
-                while run.status == RunStatus.AWAITING_HUMAN_JUDGE:
-                    _show_human_packet(run)
-                    action = _prompt_human_judge(run)
-                    bus.emit(
-                        "phase",
-                        {"phase": "debate", "message": "Human judge processing...", "status": "debating"},
-                    )
-                    run = await orch.continue_human_run(run.run_id, action)
-                    orch.repository.save_run(run)
-                    if run.status == RunStatus.COMPLETED:
-                        break
-                    # Rebuild packet after a requested round and loop
-                if not silent:
-                    _verdict(run)
+            while run.status == RunStatus.AWAITING_HUMAN_JUDGE:
+                _show_human_packet(run)
+                action = _prompt_human_judge(run)
+                bus.emit(
+                    "phase",
+                    {"phase": "debate", "message": "Human judge processing...", "status": "debating"},
+                )
+                run = await orch.continue_human_run(run.run_id, action)
+                orch.repository.save_run(run)
+                if run.status == RunStatus.COMPLETED:
+                    break
+                # Rebuild packet after a requested round and loop
+            _verdict(run)
             return run
 
         # Phase: debate rounds
@@ -1883,6 +1891,7 @@ async def _run_debate_live(orch, request, silent: bool = False) -> ExperimentRun
         return run
 
     except Exception as exc:
+        spinner.stop()
         error_msg = str(exc) or type(exc).__name__
         if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
             error_msg = (
@@ -2342,7 +2351,7 @@ _SEVERITY_COLORS = {
 def _render_review_report_md(report) -> str:
     """Render a ReviewReport as a Markdown string."""
     lines: list[str] = []
-    lines.append(f"# Code Review Report")
+    lines.append("# Code Review Report")
     lines.append("")
     lines.append(f"- **Review ID**: `{report.review_id}`")
     lines.append(f"- **Created**: {report.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
@@ -2351,14 +2360,14 @@ def _render_review_report_md(report) -> str:
     if report.reviewed_paths:
         lines.append(f"- **Reviewed Paths**: {', '.join(f'`{p}`' for p in report.reviewed_paths)}")
     if report.git_diff_included:
-        lines.append(f"- **Git Diff**: included")
+        lines.append("- **Git Diff**: included")
     lines.append("")
 
     # Severity summary
     lines.append("## Summary")
     lines.append("")
-    lines.append(f"| Severity | Count |")
-    lines.append(f"|----------|-------|")
+    lines.append("| Severity | Count |")
+    lines.append("|----------|-------|")
     lines.append(f"| Critical | {report.critical_count} |")
     lines.append(f"| High     | {report.high_count} |")
     lines.append(f"| Medium   | {report.medium_count} |")
@@ -2952,6 +2961,7 @@ def build_parser() -> argparse.ArgumentParser:
     # delete
     p_delete = sub.add_parser("delete", help="Delete a past battle run")
     p_delete.add_argument("run_id", help="Run ID (or prefix), or 'all' to delete all runs")
+    p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
     # debate
     p_debate = sub.add_parser("debate", help="Run a debate from the terminal")
@@ -3031,6 +3041,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="Project directory to include as context for the debate.",
+    )
+    p_debate.add_argument(
+        "--lang",
+        default=None,
+        metavar="LANGUAGE",
+        help="Response language (e.g. ko, en, ja). Default: auto-detect.",
+    )
+    p_debate.add_argument(
+        "--internet-search",
+        action="store_true",
+        default=False,
+        help="Encourage gladiators to use internet search during the debate.",
+    )
+    p_debate.add_argument(
+        "--task-type",
+        default=None,
+        choices=[t.value for t in TaskType],
+        metavar="TYPE",
+        help=(
+            "Task type for the debate. Choices: "
+            + ", ".join(t.value for t in TaskType)
+            + ". Default: research_design."
+        ),
+    )
+    p_debate.add_argument(
+        "--report-instructions",
+        default=None,
+        metavar="TEXT",
+        help="Custom instructions for final report generation.",
     )
 
     # monitor

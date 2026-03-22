@@ -40,20 +40,16 @@ def _timeout(config: ProviderConfig, default: int) -> int | None:
 def _resolve_pricing(config: ProviderConfig):
     """Return pricing for a provider, falling back to the built-in table when not explicitly set."""
     from colosseum.core.models import ProviderPricing
+    from colosseum.core.pricing import MODEL_PRICING
 
     if config.pricing.prompt_cost_per_1k_tokens > 0:
         return config.pricing
-    # Auto-inject from the canonical pricing table in cli.py
-    try:
-        from colosseum.cli import _MODEL_PRICING
-        entry = _MODEL_PRICING.get(config.model)
-        if entry:
-            return ProviderPricing(
-                prompt_cost_per_1k_tokens=entry[0],
-                completion_cost_per_1k_tokens=entry[1],
-            )
-    except Exception:
-        pass
+    entry = MODEL_PRICING.get(config.model)
+    if entry:
+        return ProviderPricing(
+            prompt_cost_per_1k_tokens=entry[0],
+            completion_cost_per_1k_tokens=entry[1],
+        )
     return None
 
 

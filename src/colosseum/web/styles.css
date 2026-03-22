@@ -397,20 +397,6 @@ h1 {
   border-color: var(--gold);
 }
 
-.quota-chip {
-  margin-top: 2px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  background: rgba(212, 164, 76, 0.1);
-  color: var(--gold-light);
-}
-
-.quota-chip.exhausted {
-  background: rgba(192, 57, 43, 0.16);
-  color: #efb0a8;
-}
 
 /* ── Text / Link buttons ── */
 .text-btn {
@@ -483,95 +469,7 @@ h1 {
   margin-bottom: 16px;
 }
 
-.quota-panel {
-  margin: 14px 0 20px;
-  padding: 16px;
-  border-radius: 14px;
-  border: 1px solid rgba(212, 164, 76, 0.14);
-  background: rgba(15, 15, 26, 0.38);
-}
-
-.quota-panel-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-}
-
-.quota-title {
-  margin: 0 0 4px;
-  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-  font-size: 1rem;
-  color: var(--gold);
-}
-
-.quota-copy {
-  margin: 0;
-  max-width: 520px;
-  color: var(--sand-muted);
-  font-size: 0.8rem;
-  line-height: 1.45;
-}
-
-.quota-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.quota-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1.2fr) repeat(3, minmax(120px, 1fr));
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(26, 26, 46, 0.66);
-  border: 1px solid rgba(212, 164, 76, 0.08);
-}
-
-.quota-meta {
-  min-width: 0;
-}
-
-.quota-label {
-  font-weight: 700;
-  font-size: 0.88rem;
-}
-
-.quota-status {
-  margin-top: 4px;
-  font-size: 0.74rem;
-  color: var(--sand-muted);
-}
-
-.quota-status.tracked {
-  color: #8ecdb7;
-}
-
-.quota-status.exhausted {
-  color: #efb0a8;
-}
-
-.quota-date {
-  min-width: 0;
-}
-
-.quota-actions {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(212, 164, 76, 0.08);
-}
-
-.quota-controls {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.quota-help {
+.cli-help-text {
   margin: 8px 2px 0;
   color: var(--sand-muted);
   font-size: 0.8rem;
@@ -1961,8 +1859,6 @@ h1 {
   .controls-row { flex-direction: column; gap: 16px; }
   .btn-fight { font-size: 1.1rem; padding: 14px; }
   .cli-grid { grid-template-columns: 1fr; }
-  .quota-row { grid-template-columns: 1fr; }
-  .quota-panel-head { flex-direction: column; }
   .notice-copy { max-width: none; text-align: left; }
   .topic-row { flex-direction: column; gap: 0; }
   .topic-type-col { flex: none; width: 100%; }
@@ -2482,3 +2378,132 @@ details[open] .collapsible-summary {
 .badge-red { background: #3d1010; color: #f87171; border: 1px solid #991b1b; }
 .badge-gray { background: #2a2a2a; color: #9ca3af; border: 1px solid #4b5563; }
 .local-runtime-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; margin-left: 8px; }
+
+/* ── HuggingFace Hub Section ── */
+.hf-section {
+  margin: 20px 0;
+  padding: 18px;
+  border-radius: var(--r);
+  border: 1px solid rgba(212, 164, 76, 0.14);
+  background: rgba(15, 15, 26, 0.38);
+}
+.hf-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.hf-section-title {
+  margin: 0 0 4px;
+  font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+  font-size: 1rem;
+  color: var(--gold);
+}
+.hf-section-desc {
+  margin: 0;
+  color: var(--sand-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.hf-installed-count {
+  font-size: 0.78rem;
+  color: #8ecdb7;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(78, 173, 128, 0.1);
+  white-space: nowrap;
+}
+.hf-installed-count:empty { display: none; }
+.hf-search-row { display: flex; gap: 0.5rem; margin-bottom: 14px; }
+.hf-search-row input { flex: 1; }
+
+/* Card grid */
+.hf-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+.hf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(26, 26, 46, 0.7);
+  border: 1px solid rgba(212, 164, 76, 0.08);
+  transition: border-color 0.15s, background 0.15s;
+  cursor: default;
+}
+.hf-card:hover { border-color: rgba(212, 164, 76, 0.25); background: rgba(26, 26, 46, 0.9); }
+.hf-card-installed { border-color: rgba(78, 173, 128, 0.25); }
+.hf-card-tag {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+  opacity: 0.7;
+}
+.hf-card-name {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: var(--sand);
+  line-height: 1.25;
+}
+.hf-card-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--sand-muted);
+}
+.hf-card-size { font-weight: 600; }
+.hf-card-dl-btn {
+  margin-top: auto;
+  padding: 6px 0;
+  border: 1px solid rgba(212, 164, 76, 0.3);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gold);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.hf-card-dl-btn:hover { background: var(--gold); color: var(--bg-deep); }
+.hf-downloading { background: rgba(212, 164, 76, 0.1) !important; color: var(--gold-light) !important; cursor: wait; animation: hf-pulse 1.5s ease-in-out infinite; }
+@keyframes hf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.hf-pull-done { background: #166534 !important; color: #4ade80 !important; border-color: #166534 !important; cursor: default; }
+.hf-card-status {
+  margin-top: auto;
+  padding: 5px 0;
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 8px;
+}
+.hf-card-ready { background: rgba(78, 173, 128, 0.12); color: #4ade80; }
+.hf-popular-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--sand-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.hf-results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  color: var(--sand-muted);
+  margin-bottom: 10px;
+}
+.hf-clear-btn { font-size: 0.78rem; }
+.hf-loading, .hf-empty, .hf-error { padding: 0.75rem 0; color: var(--sand-muted); font-size: 0.9rem; }
+.hf-error { color: var(--blood); }
+@media (max-width: 600px) {
+  .hf-card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}

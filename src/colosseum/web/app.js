@@ -139,14 +139,6 @@ var customModels = loadCustomModels();
 var gladiatorPersonas = {};  // id -> {persona_id, persona_name, persona_content}
 var availablePersonas = [];  // fetched from /personas
 var personaBuilderTarget = null;
-var paidQuotaStates = {};     // quota_key -> state
-var BASE_PAID_QUOTA_DEFAULTS = [
-  { quota_key: "paid:claude", gladiator_id: "claude", label: "Claude", cycle_token_limit: 0, remaining_tokens: 0, reset_at: null },
-  { quota_key: "paid:openai", gladiator_id: "openai", label: "OpenAI", cycle_token_limit: 0, remaining_tokens: 0, reset_at: null },
-  { quota_key: "paid:gemini", gladiator_id: "gemini", label: "Gemini", cycle_token_limit: 0, remaining_tokens: 0, reset_at: null }
-];
-var DEFAULT_FALLBACK_MODEL = "ollama:llama3.2";
-
 function normalizeCustomModel(raw) {
   raw = raw || {};
   var safeName = raw.name || "Custom Model";
@@ -161,8 +153,7 @@ function normalizeCustomModel(raw) {
     type: type,
     tier: tier,
     model: modelId,
-    command: Array.isArray(raw.command) ? raw.command : (typeof raw.command === "string" ? raw.command.split(" ").filter(Boolean) : []),
-    quota_key: raw.quota_key || (tier === "paid" ? "paid:custom:" + (safeId || "custom-model") : null)
+    command: Array.isArray(raw.command) ? raw.command : (typeof raw.command === "string" ? raw.command.split(" ").filter(Boolean) : [])
   };
 }
 
@@ -636,191 +627,6 @@ function setBattleNote(message, busy) {
   else note.classList.remove("busy");
 }
 
-function quotaKeyForGladiator(gladiatorId) {
-  if (gladiatorId === "claude") return "paid:claude";
-  if (gladiatorId === "openai") return "paid:openai";
-  if (gladiatorId === "gemini") return "paid:gemini";
-  return null;
-}
-
-function quotaKeyForEntry(entry) {
-  if (!entry) return null;
-  if (entry.quota_key) return entry.quota_key;
-  return quotaKeyForGladiator(entry.id);
-}
-
-function quotaStateForEntry(entry) {
-  var quotaKey = quotaKeyForEntry(entry);
-  return quotaKey ? paidQuotaStates[quotaKey] || null : null;
-}
-
-function isTrackedQuotaState(state) {
-  return !!state && ((state.cycle_token_limit || 0) > 0 || (state.remaining_tokens || 0) > 0 || !!state.reset_at);
-}
-
-function isGladiatorQuotaBlocked(gladiator) {
-  if (!gladiator || gladiator.tier !== "paid") return false;
-  var state = quotaStateForEntry(gladiator);
-  return isTrackedQuotaState(state) && (state.remaining_tokens || 0) <= 0;
-}
-
-function quotaStatusText(gladiator) {
-  if (!gladiator || gladiator.tier !== "paid") return "";
-  var state = quotaStateForEntry(gladiator);
-  if (!isTrackedQuotaState(state)) return "Quota not tracked";
-  if ((state.remaining_tokens || 0) > 0) {
-    return (state.remaining_tokens || 0).toLocaleString() + " tracked tokens left";
-  }
-  if (state.reset_at) {
-    return "Exhausted until " + new Date(state.reset_at).toLocaleString();
-  }
-  return "Tracked quota exhausted";
-}
-
-function mergeQuotaStates(list) {
-  var merged = {};
-  getQuotaDefaults().forEach(function(item) {
-    merged[item.quota_key] = JSON.parse(JSON.stringify(item));
-  });
-  (list || []).forEach(function(item) {
-    if (!item || !item.quota_key) return;
-    merged[item.quota_key] = item;
-  });
-  paidQuotaStates = merged;
-}
-
-function fetchQuotaStates() {
-  return api("/provider-quotas").then(function(list) {
-    mergeQuotaStates(list);
-    renderQuotaPanel();
-    renderGladiatorGrid();
-    return paidQuotaStates;
-  }).catch(function() {
-    mergeQuotaStates([]);
-    renderQuotaPanel();
-    renderGladiatorGrid();
-    return paidQuotaStates;
-  });
-}
-
-function freeFallbackVariants() {
-  var variants = [];
-  GLADIATORS.forEach(function(g) {
-    if (g.tier !== "free") return;
-    (g.variants || []).forEach(function(v) {
-      variants.push({
-        group: g.name,
-        label: g.name + " — " + v.label,
-        variant: v
-      });
-    });
-  });
-  customModels.forEach(function(m) {
-    if (m.tier !== "free") return;
-    variants.push({
-      group: "Custom",
-      label: m.name + " — custom",
-      variant: m,
-      custom: true
-    });
-  });
-  return variants;
-}
-
-function getQuotaDefaults() {
-  var defaults = BASE_PAID_QUOTA_DEFAULTS.slice();
-  customModels.forEach(function(model) {
-    if (model.tier !== "paid") return;
-    defaults.push({
-      quota_key: model.quota_key || ("paid:custom:" + model.id),
-      gladiator_id: model.id,
-      label: model.name,
-      cycle_token_limit: 0,
-      remaining_tokens: 0,
-      reset_at: null
-    });
-  });
-  return defaults;
-}
-
-function renderQuotaPanel() {
-  var list = document.getElementById("quota-list");
-  if (!list) return;
-  list.innerHTML = getQuotaDefaults().map(function(def) {
-    var state = paidQuotaStates[def.quota_key] || def;
-    var resetValue = state.reset_at ? new Date(state.reset_at).toISOString().slice(0, 16) : "";
-    var tracked = isTrackedQuotaState(state);
-    var statusClass = tracked && (state.remaining_tokens || 0) <= 0 ? "exhausted" : tracked ? "tracked" : "idle";
-    var statusText = tracked ? quotaStatusText({ id: def.gladiator_id, tier: "paid", quota_key: def.quota_key }) : "Tracking off";
-    return '<div class="quota-row">' +
-      '<div class="quota-meta">' +
-        '<div class="quota-label">' + esc(def.label) + '</div>' +
-        '<div class="quota-status ' + esc(statusClass) + '">' + esc(statusText) + '</div>' +
-      '</div>' +
-      '<input class="arena-input-sm quota-input" data-field="cycle" data-key="' + esc(def.quota_key) + '" type="number" min="0" placeholder="Cycle tokens" value="' + esc(String(state.cycle_token_limit || "")) + '"/>' +
-      '<input class="arena-input-sm quota-input" data-field="remaining" data-key="' + esc(def.quota_key) + '" type="number" min="0" placeholder="Remaining" value="' + esc(String(state.remaining_tokens || "")) + '"/>' +
-      '<input class="arena-input-sm quota-input quota-date" data-field="reset_at" data-key="' + esc(def.quota_key) + '" type="datetime-local" value="' + esc(resetValue) + '"/>' +
-      '</div>';
-  }).join("");
-
-  var fallbackSelect = document.getElementById("free-fallback-model");
-  if (fallbackSelect && !fallbackSelect.dataset.ready) {
-    fallbackSelect.innerHTML = freeFallbackVariants().map(function(item) {
-      var selected = item.variant.model === DEFAULT_FALLBACK_MODEL ? ' selected' : '';
-      return '<option value="' + esc(item.variant.model) + '"' + selected + '>' + esc(item.label) + '</option>';
-    }).join("");
-    fallbackSelect.dataset.ready = "true";
-  }
-  updateQuotaPolicyNote();
-}
-
-function collectQuotaStatesFromUI() {
-  return getQuotaDefaults().map(function(def) {
-    var cycleEl = document.querySelector('.quota-input[data-field="cycle"][data-key="' + def.quota_key + '"]');
-    var remainingEl = document.querySelector('.quota-input[data-field="remaining"][data-key="' + def.quota_key + '"]');
-    var resetEl = document.querySelector('.quota-input[data-field="reset_at"][data-key="' + def.quota_key + '"]');
-    return {
-      quota_key: def.quota_key,
-      label: def.label,
-      billing_tier: "paid",
-      cycle_token_limit: cycleEl && cycleEl.value ? parseInt(cycleEl.value, 10) : 0,
-      remaining_tokens: remainingEl && remainingEl.value ? parseInt(remainingEl.value, 10) : 0,
-      reset_at: resetEl && resetEl.value ? new Date(resetEl.value).toISOString() : null
-    };
-  });
-}
-
-function saveQuotaSettings() {
-  var states = collectQuotaStatesFromUI();
-  return api("/provider-quotas", {
-    method: "PUT",
-    body: JSON.stringify({ states: states })
-  }).then(function(list) {
-    mergeQuotaStates(list);
-    renderQuotaPanel();
-    renderGladiatorGrid();
-    toast("Paid quota settings saved.");
-  });
-}
-
-function updateQuotaPolicyNote() {
-  var select = document.getElementById("paid-depletion-action");
-  var fallbackSelect = document.getElementById("free-fallback-model");
-  var note = document.getElementById("quota-policy-note");
-  if (!select || !note) return;
-  if (select.value === "switch_to_free") {
-    note.textContent = "If a paid provider runs dry mid-battle, Colosseum will swap only the next turns to " +
-      ((fallbackSelect && fallbackSelect.options[fallbackSelect.selectedIndex]) ? fallbackSelect.options[fallbackSelect.selectedIndex].text : "the chosen free model") + ".";
-    if (fallbackSelect) fallbackSelect.disabled = false;
-  } else if (select.value === "wait_for_reset") {
-    note.textContent = "If a paid provider runs dry mid-battle, Colosseum will pause until the tracked reset time. Long waits keep the run open.";
-    if (fallbackSelect) fallbackSelect.disabled = true;
-  } else {
-    note.textContent = "If a paid provider runs dry mid-battle, the run stops immediately with a clear error.";
-    if (fallbackSelect) fallbackSelect.disabled = true;
-  }
-}
-
 function isImageUpload(file) {
   var type = (file && file.type) || "";
   var name = (file && file.name) || "";
@@ -889,9 +695,8 @@ function renderGladiatorGrid() {
 }
 
 function createGladiatorCard(g) {
-  var blocked = isGladiatorQuotaBlocked(g);
   var authBlocked = isGladiatorAuthBlocked(g);
-  var isDisabled = blocked || authBlocked;
+  var isDisabled = authBlocked;
   if (isDisabled && selectedGladiators[g.id]) delete selectedGladiators[g.id];
   var card = document.createElement("div");
   card.className = "gladiator-card" + (selectedGladiators[g.id] ? " selected" : "") + (isDisabled ? " disabled-card" : "") + (authBlocked ? " auth-blocked" : "");
@@ -904,8 +709,6 @@ function createGladiatorCard(g) {
   }
   if (authBlocked) {
     html += '<div class="auth-chip">Not authenticated</div>';
-  } else if (g.tier === "paid") {
-    html += '<div class="quota-chip' + (blocked ? ' exhausted' : '') + '">' + esc(quotaStatusText(g)) + '</div>';
   }
 
   // Variant select
@@ -972,10 +775,6 @@ function createGladiatorCard(g) {
       toast(g.name + " is not authenticated. Click Login to sign in.");
       return;
     }
-    if (blocked) {
-      toast(quotaStatusText(g));
-      return;
-    }
     if (selectedGladiators[g.id]) {
       delete selectedGladiators[g.id];
     } else {
@@ -1034,17 +833,14 @@ function createGladiatorCard(g) {
 }
 
 function createCustomCard(m) {
-  var blocked = isGladiatorQuotaBlocked(m);
-  if (blocked && selectedGladiators[m.id]) delete selectedGladiators[m.id];
   var card = document.createElement("div");
-  card.className = "gladiator-card" + (selectedGladiators[m.id] ? " selected" : "") + (blocked ? " disabled-card" : "");
+  card.className = "gladiator-card" + (selectedGladiators[m.id] ? " selected" : "");
   card.dataset.gid = m.id;
 
   var html = '<div class="gladiator-icon">\u2699\uFE0F</div>';
   html += '<div class="gladiator-name">' + esc(m.name) + '</div>';
   html += '<div style="font-size:0.72rem;color:var(--sand-muted)">' + esc(m.desc) + '</div>';
-  html += '<div class="quota-chip' + (m.tier === "paid" && blocked ? ' exhausted' : '') + '">' + esc(m.tier === "paid" ? quotaStatusText(m) : "Free custom model") + '</div>';
-  html += '<select class="persona-select" data-gid="' + esc(m.id) + '"' + (blocked ? ' disabled' : '') + '>';
+  html += '<select class="persona-select" data-gid="' + esc(m.id) + '">';
   html += '<option value="">-- Persona --</option>';
   availablePersonas.forEach(function(p) {
     var selAttr = (gladiatorPersonas[m.id] && gladiatorPersonas[m.id].persona_id === p.persona_id) ? ' selected' : '';
@@ -1058,10 +854,6 @@ function createCustomCard(m) {
   card.innerHTML = html;
   card.addEventListener("click", function(e) {
     if (e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
-    if (blocked) {
-      toast(quotaStatusText(m));
-      return;
-    }
     if (selectedGladiators[m.id]) {
       delete selectedGladiators[m.id];
     } else {
@@ -1215,8 +1007,6 @@ function refreshGladiatorsFromAPI() {
 selectedGladiators["claude"] = true;
 selectedGladiators["gemini"] = true;
 renderGladiatorGrid();
-renderQuotaPanel();
-fetchQuotaStates();
 fetchSetupStatus();
 fetchLocalRuntimeStatus(false);  // populate GPU panel and fit badges on load
 
@@ -1225,13 +1015,6 @@ refreshGladiatorsFromAPI();
 _modelPollTimer = setInterval(refreshGladiatorsFromAPI, 5000);
 syncCustomModelForm();
 
-document.getElementById("quota-save").addEventListener("click", function() {
-  saveQuotaSettings().catch(function(e) {
-    toast("Could not save quota settings: " + (e.message || ""));
-  });
-});
-document.getElementById("paid-depletion-action").addEventListener("change", updateQuotaPolicyNote);
-document.getElementById("free-fallback-model").addEventListener("change", updateQuotaPolicyNote);
 document.getElementById("build-persona-btn").addEventListener("click", function() {
   openPersonaBuilderModal(null);
 });
@@ -1365,10 +1148,6 @@ function updateJudgeControls() {
   var option = getSelectedJudgeModelOption();
   if (!option) {
     judgeNote.textContent = "Pick a judge model before starting the run.";
-    return;
-  }
-  if (option.blocked) {
-    judgeNote.textContent = option.label + " is unavailable because its tracked quota is exhausted.";
     return;
   }
   judgeNote.textContent = option.label + " will review each round, set the next agenda, and deliver the final verdict.";
@@ -1513,11 +1292,8 @@ document.getElementById("add-cli-btn").addEventListener("click", function() {
 
 function syncCustomModelForm() {
   var type = document.getElementById("cli-type").value;
-  var tier = document.getElementById("cli-tier").value;
   var cmd = document.getElementById("cli-cmd");
   var modelInput = document.getElementById("cli-model-id");
-  var quotaInput = document.getElementById("cli-quota-key");
-  var help = document.getElementById("cli-help");
   if (type === "command") {
     cmd.disabled = false;
     cmd.placeholder = "CLI command (e.g. /opt/my_model_cli --json)";
@@ -1531,11 +1307,6 @@ function syncCustomModelForm() {
     cmd.value = "";
     modelInput.placeholder = "Local HF/Ollama model id (e.g. org/model or llama3.3)";
   }
-  quotaInput.disabled = tier !== "paid";
-  if (tier !== "paid") quotaInput.value = "";
-  help.textContent = tier === "paid"
-    ? "Paid custom models can use the same quota tracker. Give them a quota key or let Colosseum generate one."
-    : "Free custom models can join debates immediately and can also be used as fallback models. Image-aware custom CLIs can read metadata.image_inputs for shared VLM debates.";
   if (
     isLocalModelType(type) &&
     !localRuntimeLoading &&
@@ -1548,16 +1319,13 @@ function syncCustomModelForm() {
 }
 
 document.getElementById("cli-type").addEventListener("change", syncCustomModelForm);
-document.getElementById("cli-tier").addEventListener("change", syncCustomModelForm);
 
 document.getElementById("cli-save").addEventListener("click", function() {
   var name = document.getElementById("cli-name").value.trim();
   var providerType = document.getElementById("cli-type").value;
-  var tier = document.getElementById("cli-tier").value;
   var cmd = document.getElementById("cli-cmd").value.trim();
   var modelId = document.getElementById("cli-model-id").value.trim();
   var desc = document.getElementById("cli-desc").value.trim();
-  var quotaKey = document.getElementById("cli-quota-key").value.trim();
   if (!name) return toast("Enter a name for the gladiator.");
   if (providerType === "command" && !cmd) return toast("Enter the CLI command.");
   if (providerType !== "command" && !modelId) return toast("Enter the model id.");
@@ -1575,28 +1343,189 @@ document.getElementById("cli-save").addEventListener("click", function() {
     name: name,
     desc: desc || (providerType === "command" ? cmd.split(" ")[0] : modelId),
     type: providerType,
-    tier: tier,
+    tier: "free",
     model: modelId || name,
-    command: providerType === "command" ? cmd.split(" ").filter(Boolean) : [],
-    quota_key: tier === "paid" ? (quotaKey || ("paid:custom:" + id)) : null
+    command: providerType === "command" ? cmd.split(" ").filter(Boolean) : []
   });
 
   customModels.push(newModel);
   saveCustomModels(customModels);
   renderGladiatorGrid();
   renderRegisteredList();
-  renderQuotaPanel();
 
   document.getElementById("cli-name").value = "";
   document.getElementById("cli-model-id").value = "";
   document.getElementById("cli-cmd").value = "";
   document.getElementById("cli-desc").value = "";
-  document.getElementById("cli-quota-key").value = "";
   document.getElementById("cli-form").classList.add("hidden");
   syncCustomModelForm();
 
   toast("Forged: " + name);
 });
+
+/* ── HuggingFace Hub Browser ── */
+var _hfInstalledModels = [];
+
+var HF_POPULAR_MODELS = [
+  { repo_id: "unsloth/Llama-3.2-1B-Instruct-GGUF", desc: "Llama 3.2 1B", size: "~1 GB", tag: "Small & fast" },
+  { repo_id: "bartowski/Llama-3.2-3B-Instruct-GGUF", desc: "Llama 3.2 3B", size: "~2 GB", tag: "Balanced" },
+  { repo_id: "bartowski/Llama-3.3-70B-Instruct-GGUF", desc: "Llama 3.3 70B", size: "~40 GB", tag: "Powerful" },
+  { repo_id: "bartowski/Mistral-7B-Instruct-v0.3-GGUF", desc: "Mistral 7B v0.3", size: "~4 GB", tag: "Popular" },
+  { repo_id: "bartowski/gemma-2-9b-it-GGUF", desc: "Gemma 2 9B", size: "~5 GB", tag: "Google" },
+  { repo_id: "bartowski/Qwen2.5-7B-Instruct-GGUF", desc: "Qwen 2.5 7B", size: "~4 GB", tag: "Multilingual" },
+  { repo_id: "bartowski/Phi-3.5-mini-instruct-GGUF", desc: "Phi 3.5 Mini", size: "~2 GB", tag: "Compact" },
+  { repo_id: "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF", desc: "DeepSeek R1 7B", size: "~4 GB", tag: "Reasoning" },
+];
+
+function hfModelDisplayName(repoId) {
+  var parts = repoId.split("/");
+  var name = parts.length > 1 ? parts[1] : parts[0];
+  return name.replace(/-GGUF$/i, "").replace(/-/g, " ");
+}
+
+function isHfModelInstalled(repoId) {
+  return _hfInstalledModels.some(function(m) { return m.indexOf(repoId) !== -1; });
+}
+
+function refreshHfInstalledModels() {
+  api("/hf/models").then(function(list) {
+    _hfInstalledModels = list || [];
+    var countEl = document.getElementById("hf-installed-count");
+    if (countEl) {
+      countEl.textContent = _hfInstalledModels.length
+        ? _hfInstalledModels.length + " model" + (_hfInstalledModels.length > 1 ? "s" : "") + " installed"
+        : "";
+    }
+    renderHfPopular();
+  }).catch(function() {});
+}
+
+function renderHfPopular() {
+  var container = document.getElementById("hf-popular");
+  if (!container) return;
+  var html = '<div class="hf-popular-label">Popular Models</div><div class="hf-card-grid">';
+  HF_POPULAR_MODELS.forEach(function(m) {
+    var installed = isHfModelInstalled(m.repo_id);
+    html += '<div class="hf-card' + (installed ? ' hf-card-installed' : '') + '" data-repo="' + esc(m.repo_id) + '">';
+    html += '<div class="hf-card-tag">' + esc(m.tag) + '</div>';
+    html += '<div class="hf-card-name">' + esc(m.desc) + '</div>';
+    html += '<div class="hf-card-meta">';
+    html += '<span class="hf-card-size">' + esc(m.size) + '</span>';
+    html += '<span class="hf-card-author">' + esc(m.repo_id.split("/")[0]) + '</span>';
+    html += '</div>';
+    if (installed) {
+      html += '<div class="hf-card-status hf-card-ready">Ready</div>';
+    } else {
+      html += '<button class="hf-card-dl-btn" data-repo="' + esc(m.repo_id) + '">Download</button>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+
+  container.querySelectorAll(".hf-card-dl-btn").forEach(function(btn) {
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      pullHuggingFaceModel(btn.dataset.repo, btn);
+    });
+  });
+}
+
+document.getElementById("hf-search-btn").addEventListener("click", searchHuggingFace);
+document.getElementById("hf-search-input").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") searchHuggingFace();
+});
+
+function searchHuggingFace() {
+  var query = document.getElementById("hf-search-input").value.trim();
+  if (!query) return;
+  var resultsEl = document.getElementById("hf-search-results");
+  var popularEl = document.getElementById("hf-popular");
+  if (popularEl) popularEl.classList.add("hidden");
+  resultsEl.innerHTML = '<div class="hf-loading">Searching HuggingFace Hub...</div>';
+
+  api("/hf/search?q=" + encodeURIComponent(query) + "&limit=20")
+    .then(function(data) {
+      if (!data.results || !data.results.length) {
+        resultsEl.innerHTML = '<div class="hf-empty">No GGUF models found for "' + esc(query) + '"</div>';
+        return;
+      }
+      var html = '<div class="hf-results-header">' + data.results.length + ' results <button class="text-btn hf-clear-btn">Clear</button></div>';
+      html += '<div class="hf-card-grid">';
+      data.results.forEach(function(m) {
+        var installed = isHfModelInstalled(m.repo_id);
+        var dlCount = (m.downloads || 0) >= 1000 ? Math.round((m.downloads || 0) / 1000) + "K" : String(m.downloads || 0);
+        html += '<div class="hf-card' + (installed ? ' hf-card-installed' : '') + '" data-repo="' + esc(m.repo_id) + '">';
+        html += '<div class="hf-card-tag">' + dlCount + ' DL</div>';
+        html += '<div class="hf-card-name">' + esc(hfModelDisplayName(m.repo_id)) + '</div>';
+        html += '<div class="hf-card-meta">';
+        html += '<span class="hf-card-author">' + esc(m.author || "") + '</span>';
+        html += '</div>';
+        if (installed) {
+          html += '<div class="hf-card-status hf-card-ready">Ready</div>';
+        } else {
+          html += '<button class="hf-card-dl-btn" data-repo="' + esc(m.repo_id) + '">Download</button>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+      resultsEl.innerHTML = html;
+      resultsEl.querySelectorAll(".hf-card-dl-btn").forEach(function(btn) {
+        btn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          pullHuggingFaceModel(btn.dataset.repo, btn);
+        });
+      });
+      var clearBtn = resultsEl.querySelector(".hf-clear-btn");
+      if (clearBtn) clearBtn.addEventListener("click", function() {
+        resultsEl.innerHTML = "";
+        if (popularEl) popularEl.classList.remove("hidden");
+        document.getElementById("hf-search-input").value = "";
+      });
+    })
+    .catch(function(e) {
+      resultsEl.innerHTML = '<div class="hf-error">Search failed: ' + esc(e.message || "") + '</div>';
+    });
+}
+
+function pullHuggingFaceModel(repoId, btnEl) {
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = "Downloading...";
+    btnEl.classList.add("hf-downloading");
+  }
+  fetch("/hf/pull", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo_id: repoId })
+  })
+  .then(function(r) {
+    if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || "Pull failed"); });
+    return r.json();
+  })
+  .then(function() {
+    if (btnEl) {
+      btnEl.textContent = "Ready";
+      btnEl.classList.remove("hf-downloading");
+      btnEl.classList.add("hf-pull-done");
+    }
+    toast(hfModelDisplayName(repoId) + " is ready to use!");
+    refreshGladiatorsFromAPI();
+    refreshHfInstalledModels();
+    fetchLocalRuntimeStatus(false);
+  })
+  .catch(function(e) {
+    if (btnEl) {
+      btnEl.textContent = "Retry";
+      btnEl.disabled = false;
+      btnEl.classList.remove("hf-downloading");
+    }
+    toast("Download failed: " + (e.message || ""));
+  });
+}
+
+// Load HF state on startup
+refreshHfInstalledModels();
 
 function renderRegisteredList() {
   var list = document.getElementById("registered-list");
@@ -1622,7 +1551,6 @@ function renderRegisteredList() {
       saveCustomModels(customModels);
       renderGladiatorGrid();
       renderRegisteredList();
-      renderQuotaPanel();
       toast("Removed.");
     });
   });
@@ -1776,12 +1704,7 @@ document.getElementById("builder-cancel").addEventListener("click", function() {
 /* ── Build payload ── */
 function buildProviderPayloadFromVariant(gladiatorId, variant, tier) {
   var provider = { type: variant.type, model: variant.model };
-  if (tier === "paid") {
-    provider.billing_tier = "paid";
-    provider.quota_key = quotaKeyForGladiator(gladiatorId);
-  } else {
-    provider.billing_tier = "free";
-  }
+  provider.billing_tier = tier === "paid" ? "paid" : "free";
   if (variant.type === "huggingface_local") {
     var ollamaModel = variant.model.replace("ollama:", "");
     provider.ollama_model = ollamaModel;
@@ -1802,7 +1725,6 @@ function buildProviderPayloadFromCustomModel(model) {
     billing_tier: model.tier === "paid" ? "paid" : "free"
   };
   if (model.command && model.command.length) provider.command = model.command;
-  if (model.tier === "paid" && model.quota_key) provider.quota_key = model.quota_key;
   if (model.type === "ollama") {
     provider.ollama_model = normalizedModel;
     provider.model = "ollama:" + normalizedModel;
@@ -1846,7 +1768,7 @@ function judgeModelOptions() {
         tier: g.tier,
         entry: g,
         variant: v,
-        blocked: isGladiatorQuotaBlocked(g),
+        blocked: false,
         custom: false
       });
     });
@@ -1857,7 +1779,7 @@ function judgeModelOptions() {
       label: model.name + (model.tier === "paid" ? " · paid" : " · free"),
       tier: model.tier,
       entry: model,
-      blocked: isGladiatorQuotaBlocked(model),
+      blocked: false,
       custom: true,
       model: model
     });
@@ -1925,98 +1847,20 @@ function validateJudgeSelection() {
     return false;
   }
   if (option.blocked) {
-    toast(option.label + " cannot judge right now because its tracked quota is exhausted.");
+    toast(option.label + " cannot judge right now.");
     return false;
-  }
-  if (option.tier === "paid" && document.getElementById("paid-depletion-action").value === "wait_for_reset") {
-    var state = quotaStateForEntry(option.entry);
-    if (isTrackedQuotaState(state) && !state.reset_at) {
-      toast("Set a reset time before using wait mode with the selected AI judge.");
-      return false;
-    }
   }
   return true;
 }
 
 function buildPaidProviderPolicy() {
-  var action = document.getElementById("paid-depletion-action").value;
-  var fallbackModel = document.getElementById("free-fallback-model").value || DEFAULT_FALLBACK_MODEL;
-  var policy = { on_exhaustion: action };
-  if (action === "switch_to_free") {
-    var fallback = findVariantByModel(fallbackModel);
-    if (fallback) {
-      policy.fallback_provider = fallback.custom
-        ? buildProviderPayloadFromCustomModel(fallback.model)
-        : buildProviderPayloadFromVariant(
-            fallback.gladiator.id,
-            fallback.variant,
-            fallback.gladiator.tier
-          );
-    } else {
-      // Variant not in GLADIATORS yet (e.g. Ollama not running) — build provider directly
-      var modelStr = fallbackModel || DEFAULT_FALLBACK_MODEL;
-      var ollamaModel = modelStr.replace(/^ollama:/, "");
-      policy.fallback_provider = {
-        type: "huggingface_local",
-        model: modelStr,
-        ollama_model: ollamaModel,
-        hf_model: ollamaModel,
-        billing_tier: "free"
-      };
-    }
-  }
-  return policy;
-}
-
-function validatePaidSelection() {
-  var blocked = [];
-  GLADIATORS.forEach(function(g) {
-    if (!selectedGladiators[g.id] || g.tier !== "paid") return;
-    if (isGladiatorQuotaBlocked(g)) blocked.push(g.name);
-  });
-  customModels.forEach(function(m) {
-    if (!selectedGladiators[m.id] || m.tier !== "paid") return;
-    if (isGladiatorQuotaBlocked(m)) blocked.push(m.name);
-  });
-  if (blocked.length) {
-    toast("Tracked paid quota is exhausted for: " + blocked.join(", "));
-    return false;
-  }
-
-  if (document.getElementById("paid-depletion-action").value === "wait_for_reset") {
-    var missingReset = [];
-    GLADIATORS.forEach(function(g) {
-      if (!selectedGladiators[g.id] || g.tier !== "paid") return;
-      var state = quotaStateForEntry(g);
-      if (isTrackedQuotaState(state) && !state.reset_at) missingReset.push(g.name);
-    });
-    customModels.forEach(function(m) {
-      if (!selectedGladiators[m.id] || m.tier !== "paid") return;
-      var state = quotaStateForEntry(m);
-      if (isTrackedQuotaState(state) && !state.reset_at) missingReset.push(m.name);
-    });
-    if (missingReset.length) {
-      toast("Set a reset time before using wait mode for: " + missingReset.join(", "));
-      return false;
-    }
-  }
-
-  return true;
+  return { on_exhaustion: "fail" };
 }
 
 function startPolicyNote() {
-  var action = document.getElementById("paid-depletion-action").value;
   var searchLine = encourageInternetSearch
     ? " Search-aware mode is on, so agents are encouraged to verify uncertain claims with authoritative web sources when their provider supports it."
     : " Search-aware mode is off, so agents must stay inside the frozen bundle and explicitly mark uncertainty.";
-  if (action === "switch_to_free") {
-    var fallbackSelect = document.getElementById("free-fallback-model");
-    var label = fallbackSelect && fallbackSelect.options[fallbackSelect.selectedIndex] ? fallbackSelect.options[fallbackSelect.selectedIndex].text : "the free fallback";
-    return "Arena locked. If paid quota runs out, later turns will switch to " + label + "." + searchLine;
-  }
-  if (action === "wait_for_reset") {
-    return "Arena locked. If paid quota runs out, Colosseum will pause until the tracked reset time." + searchLine;
-  }
   return "Arena locked. Preparing shared context and scheduling gladiators..." + searchLine;
 }
 
@@ -2328,7 +2172,7 @@ function handleSSEEvent(evt) {
     if (currentRunId) {
       window.setTimeout(function() { openReport(currentRunId); }, 600);
     }
-    fetchQuotaStates();
+
     var btn = document.getElementById("start-btn");
     btn.disabled = false;
     btn.textContent = "FIGHT!";
@@ -2355,7 +2199,7 @@ function handleSSEEvent(evt) {
     liveRunData.budget_by_actor = evt.budget_by_actor || {};
     liveRunData.final_report = evt.final_report || null;
     appendLiveEntry("Debate complete!", "verdict");
-    fetchQuotaStates();
+
     if (currentRunId) {
       setBattleNote("Battle finished. Opening the full report...", false);
       window.setTimeout(function() { openReport(currentRunId); }, 600);
@@ -2370,7 +2214,7 @@ function handleSSEEvent(evt) {
     cancelDebateBtn.classList.add("hidden");
     appendLiveEntry("Error: " + (evt.message || "Unknown error"), "error");
     setBattleNote("The run ended with an error. Try reducing context size or switching to fewer models.", false);
-    fetchQuotaStates();
+
   } else {
     appendLiveEntry(phase + (evt.message ? ": " + evt.message : ""), "debate");
   }
@@ -2452,7 +2296,6 @@ document.getElementById("start-btn").addEventListener("click", function() {
 
   var selectedCount = Object.keys(selectedGladiators).length;
   if (selectedCount < 2) return toast("Choose at least 2 gladiators.");
-  if (!validatePaidSelection()) return;
   if (!validateJudgeSelection()) return;
 
   var payload = buildPayload();

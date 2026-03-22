@@ -71,30 +71,22 @@
 	    <label class="label">Choose Your Gladiators (select 2+)</label>
 	    <div id="gladiator-grid" class="gladiator-grid"></div>
 
-	    <div class="quota-panel">
-	      <div class="quota-panel-head">
-	        <div>
-	          <h3 class="quota-title">Paid Plan Tracker</h3>
-	          <p class="quota-copy">Manual local tracking for subscription-token windows. Set a limit to disable exhausted paid models before battle.</p>
-	        </div>
-	        <button id="quota-save" class="btn-gold btn-sm">Save quota settings</button>
-	      </div>
-	      <div id="quota-list" class="quota-list"></div>
-	      <div class="quota-actions">
-	        <label class="label" for="paid-depletion-action">When a paid plan runs out mid-battle</label>
-	        <div class="quota-controls">
-	          <select id="paid-depletion-action" class="arena-input-sm">
-	            <option value="switch_to_free">Switch to free fallback</option>
-	            <option value="wait_for_reset">Wait until reset</option>
-	            <option value="fail">Stop the run</option>
-	          </select>
-	          <select id="free-fallback-model" class="arena-input-sm"></select>
-	        </div>
-	        <p id="quota-policy-note" class="quota-help">
-	          Paid tracking is local to this Colosseum workspace. If you leave a provider untracked, Colosseum cannot disable it automatically.
-	        </p>
-	      </div>
-	    </div>
+      <!-- HuggingFace Model Hub -->
+      <div class="hf-section">
+        <div class="hf-section-header">
+          <div>
+            <h3 class="hf-section-title">HuggingFace Models</h3>
+            <p class="hf-section-desc">Download open-source models from HuggingFace Hub. They run locally via Ollama.</p>
+          </div>
+          <div id="hf-installed-count" class="hf-installed-count"></div>
+        </div>
+        <div class="hf-search-row">
+          <input id="hf-search-input" class="arena-input-sm" placeholder="Search models... (e.g. llama 8b, mistral, phi)"/>
+          <button id="hf-search-btn" class="btn-gold btn-sm">Search</button>
+        </div>
+        <div id="hf-popular" class="hf-popular"></div>
+        <div id="hf-search-results" class="hf-results"></div>
+      </div>
 
 	    <!-- Register CLI -->
 	    <div class="register-row">
@@ -109,16 +101,11 @@
 	          <option value="ollama">Custom Ollama model</option>
 	          <option value="huggingface_local">Custom local HF/Ollama model</option>
 	        </select>
-	        <select id="cli-tier" class="arena-input-sm">
-	          <option value="free">Free / local</option>
-	          <option value="paid">Paid / tracked</option>
-	        </select>
 	        <input id="cli-model-id" class="arena-input-sm" placeholder="Model id (e.g. my-model, org/model, qwen2.5:32b)"/>
 	        <input id="cli-cmd" class="arena-input-sm" placeholder="CLI command (e.g. /opt/my_model_cli --json)"/>
 	        <input id="cli-desc" class="arena-input-sm" placeholder="Short description (optional)"/>
-	        <input id="cli-quota-key" class="arena-input-sm" placeholder="Quota key (optional for paid models)"/>
 	      </div>
-	      <p id="cli-help" class="quota-help">Register a customer model as a debate participant. Paid custom models can use the same quota tracker.</p>
+	      <p id="cli-help" class="cli-help-text">Register a custom model as a debate participant.</p>
 	      <button id="cli-save" class="btn-gold btn-sm">Register</button>
 	    </div>
     <div id="registered-list" class="registered-list"></div>

@@ -349,6 +349,70 @@ class LocalModelFitResult(BaseModel):
     memory_required_gb: float | None = None  # VRAM needed to run this model
 
 
+class HFModelSearchResult(BaseModel):
+    """A single model from HuggingFace Hub search results."""
+
+    repo_id: str
+    author: str = ""
+    model_name: str = ""
+    downloads: int = 0
+    likes: int = 0
+    tags: list[str] = Field(default_factory=list)
+    pipeline_tag: str | None = None
+    last_modified: str | None = None
+    is_gguf: bool = True
+
+
+class HFSearchResponse(BaseModel):
+    """Response payload for HuggingFace Hub search."""
+
+    query: str
+    results: list[HFModelSearchResult] = Field(default_factory=list)
+    total: int = 0
+
+
+class HFPullRequest(BaseModel):
+    """Request payload for pulling a HuggingFace model via Ollama."""
+
+    repo_id: str
+
+    @field_validator("repo_id", mode="before")
+    @classmethod
+    def _require_repo_id(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized or "/" not in normalized:
+            raise ValueError("HF pull requires a repo_id in 'org/model' format.")
+        return normalized
+
+
+class HFRegisterRequest(BaseModel):
+    """Request payload for registering a model as an Ollama model.
+
+    Accepts GGUF files directly, or HuggingFace model directories /
+    safetensors / bin files that will be converted to GGUF first.
+    """
+
+    name: str
+    model_path: str  # GGUF file, safetensors file, or HF model directory
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _require_name(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("A model name is required for registration.")
+        return normalized
+
+
+class HFRegisterResult(BaseModel):
+    """Result payload for custom model registration."""
+
+    success: bool
+    name: str
+    message: str
+    gguf_path: str | None = None  # Path to the final GGUF file (if conversion happened)
+
+
 class AgentConfig(BaseModel):
     agent_id: str
     display_name: str

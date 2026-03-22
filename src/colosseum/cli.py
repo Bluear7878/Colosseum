@@ -257,23 +257,34 @@ def _discover_ollama_models() -> list[dict]:
             parts = line.split()
             if not parts:
                 continue
-            name = parts[0]  # e.g. "llama3.3:latest"
+            name = parts[0]  # e.g. "llama3.3:latest" or "hf.co/org/model:latest"
             model_id = name.split(":")[0] if ":" in name else name
-            display = model_id.replace("-", " ").replace("_", " ").title()
             size = parts[2] if len(parts) >= 3 else ""
+
+            # Detect HuggingFace-sourced models
+            is_hf = model_id.startswith("hf.co/")
+            if is_hf:
+                hf_path = model_id[len("hf.co/"):]
+                display = hf_path.split("/")[-1].replace("-", " ").replace("_", " ").title()
+                prefix = "hf"
+            else:
+                display = model_id.replace("-", " ").replace("_", " ").title()
+                prefix = "ollama"
+
             if size:
                 display = f"{display} ({size})"
             models.append(
                 {
-                    "id": f"ollama:{model_id}",
+                    "id": f"{prefix}:{model_id}",
                     "model": model_id,
                     "name": display,
                     "label": display,
-                    "type": "ollama",
+                    "type": "huggingface_local" if is_hf else "ollama",
                     "tier": "free",
-                    "provider": "ollama",
+                    "provider": prefix,
                     "icon": "",
                     "available": True,
+                    "source": "huggingface_hub" if is_hf else "ollama_registry",
                 }
             )
         return models
@@ -604,6 +615,73 @@ def cmd_local_runtime(args: argparse.Namespace) -> None:
         return
 
     raise ValueError(f"Unsupported local runtime command: {action}")
+
+
+def cmd_hf(args: argparse.Namespace) -> None:
+    """HuggingFace Hub model operations."""
+    from colosseum.core.models import HFRegisterRequest
+    from colosseum.services.hf_hub import HuggingFaceHubService
+
+    service = HuggingFaceHubService()
+    action = args.hf_command or "list"
+
+    if action == "search":
+        _print_header()
+        print(f"  {BOLD}Searching HuggingFace Hub for '{args.query}'...{RST}\n")
+        result = service.search(args.query, limit=args.limit)
+        if not result.results:
+            print(f"  {DIM}No GGUF models found.{RST}\n")
+            return
+        for i, m in enumerate(result.results, 1):
+            print(f"    {DIM}{i:>2}.{RST} {BOLD}{m.repo_id}{RST}  {DIM}{m.downloads:,} downloads{RST}")
+        print(f"\n  {DIM}Pull with: colosseum hf pull <repo_id>{RST}\n")
+        return
+
+    if action == "pull":
+        _print_header()
+        print(f"  Pulling {CYAN}hf.co/{args.repo_id}{RST} ...")
+        result = service.pull(args.repo_id)
+        color = GREEN if result.success else RED
+        print(f"\n  {color}{result.message}{RST}\n")
+        return
+
+    if action == "list":
+        _print_header()
+        hf_models = service.list_hf_models()
+        if not hf_models:
+            print(
+                f"  {DIM}No HuggingFace models installed."
+                f" Use 'colosseum hf pull <org/model>' to add one.{RST}\n"
+            )
+            return
+        print(f"  {BOLD}Installed HuggingFace Models{RST}\n")
+        for m in hf_models:
+            print(f"    {GREEN}+{RST} {BOLD}{m}{RST}")
+        print()
+        return
+
+    if action == "register":
+        _print_header()
+        print(f"  Registering {CYAN}{args.path}{RST} as {BOLD}{args.name}{RST}\n")
+        result = service.register_model(
+            HFRegisterRequest(name=args.name, model_path=args.path)
+        )
+        color = GREEN if result.success else RED
+        print(f"  {color}{result.message}{RST}")
+        if result.gguf_path:
+            print(f"  {DIM}GGUF: {result.gguf_path}{RST}")
+        print()
+        return
+
+    if action == "tools":
+        _print_header()
+        tools = service.conversion_tools_available()
+        print(f"  {BOLD}Conversion Tools{RST}\n")
+        for name, path in tools.items():
+            status = f"{GREEN}found{RST} → {path}" if path else f"{RED}not found{RST}"
+            print(f"    {name}: {status}")
+        print(f"\n  {DIM}Set LLAMA_CPP_DIR or add tools to PATH.{RST}\n")
+        return
 
 
 def cmd_personas(_args: argparse.Namespace) -> None:
@@ -1183,6 +1261,7 @@ def _parse_gladiator(spec: str) -> dict:
             "codex": "codex_cli",
             "gemini": "gemini_cli",
             "ollama": "ollama",
+            "hf": "huggingface_local",
             "mock": "mock",
         }
         ptype = type_map.get(provider, "command")
@@ -1194,6 +1273,8 @@ def _parse_gladiator(spec: str) -> dict:
         }
         if ptype in ("ollama", "huggingface_local"):
             agent["provider"]["ollama_model"] = model
+        if ptype == "huggingface_local" and not model.startswith("hf.co/"):
+            agent["provider"]["hf_model"] = f"hf.co/{model}"
         return agent
 
     raise ValueError(
@@ -1209,6 +1290,7 @@ def _parse_provider_spec(spec: str) -> ProviderConfig:
         "codex": "codex_cli",
         "gemini": "gemini_cli",
         "ollama": "ollama",
+        "hf": "huggingface_local",
         "mock": "mock",
     }
     if ":" not in spec:
@@ -1221,6 +1303,8 @@ def _parse_provider_spec(spec: str) -> ProviderConfig:
     kwargs: dict = {"type": ptype, "model": model}
     if ptype in ("ollama", "huggingface_local"):
         kwargs["ollama_model"] = model
+    if ptype == "huggingface_local" and not model.startswith("hf.co/"):
+        kwargs["hf_model"] = f"hf.co/{model}"
     pricing = _MODEL_PRICING.get(model)
     if pricing:
         kwargs["pricing"] = ProviderPricing(
@@ -2802,6 +2886,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_local_pull.add_argument("model", help="Model name or prefix form such as ollama:llama3.3")
 
+    # hf (HuggingFace Hub)
+    p_hf = sub.add_parser("hf", help="HuggingFace Hub model operations")
+    hf_sub = p_hf.add_subparsers(dest="hf_command")
+
+    p_hf_search = hf_sub.add_parser("search", help="Search HuggingFace Hub for GGUF models")
+    p_hf_search.add_argument("query", help="Search query (e.g. 'llama 70b', 'mistral instruct')")
+    p_hf_search.add_argument("--limit", type=int, default=20, help="Max results (default: 20)")
+
+    p_hf_pull = hf_sub.add_parser("pull", help="Download a HuggingFace model via Ollama")
+    p_hf_pull.add_argument(
+        "repo_id", help="HuggingFace repo (e.g. bartowski/Llama-3.3-70B-Instruct-GGUF)"
+    )
+
+    hf_sub.add_parser("list", help="List installed HuggingFace models")
+
+    p_hf_register = hf_sub.add_parser(
+        "register",
+        help="Register a local model (GGUF, safetensors, or HF directory) with Ollama",
+    )
+    p_hf_register.add_argument("name", help="Model name to create in Ollama")
+    p_hf_register.add_argument(
+        "--path", required=True,
+        help="Path to .gguf file, .safetensors file, or HuggingFace model directory",
+    )
+    hf_sub.add_parser("tools", help="Check availability of conversion tools (llama.cpp)")
+
     # personas
     sub.add_parser("personas", help="List available personas")
 
@@ -3034,6 +3144,7 @@ def main() -> None:
         "setup": cmd_setup,
         "models": cmd_models,
         "local-runtime": cmd_local_runtime,
+        "hf": cmd_hf,
         "personas": cmd_personas,
         "history": cmd_history,
         "show": cmd_show,

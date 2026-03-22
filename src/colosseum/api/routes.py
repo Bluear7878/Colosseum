@@ -39,9 +39,17 @@ from .routes_setup import (
     trigger_auth,
     update_local_runtime_config,
 )
+from .routes_hf import router as hf_router
+from .routes_hf import (
+    conversion_tools,
+    list_hf_models,
+    pull_hf_model,
+    register_gguf_model,
+    search_hf_models,
+)
 
 router = APIRouter()
-for child_router in (setup_router, runs_router, quotas_router, personas_router):
+for child_router in (setup_router, runs_router, quotas_router, personas_router, hf_router):
     router.include_router(child_router)
 
 __all__ = [
@@ -72,4 +80,9 @@ __all__ = [
     "get_persona",
     "create_persona",
     "delete_persona",
+    "search_hf_models",
+    "pull_hf_model",
+    "list_hf_models",
+    "register_gguf_model",
+    "conversion_tools",
 ]

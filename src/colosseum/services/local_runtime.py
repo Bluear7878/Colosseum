@@ -46,6 +46,9 @@ class LocalRuntimeService:
     def normalize_model_name(model_name: str) -> str:
         """Normalize UI/CLI model IDs into the tag Ollama expects."""
         normalized = str(model_name or "").strip()
+        # Preserve hf.co/ prefix (Ollama's native HF import syntax)
+        if normalized.startswith("hf.co/"):
+            return normalized
         normalized = re.sub(r"^(ollama|hf|huggingface):", "", normalized)
         return normalized.strip()
 

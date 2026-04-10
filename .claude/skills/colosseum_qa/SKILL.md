@@ -20,6 +20,11 @@ findings into one canonical, deduplicated, REPRODUCED-only QA report.
 The goal is **QA quality**, not picking a winner. More diverse gladiators
 catch more bugs.
 
+> **Live monitoring (tmux)**: when invoked from inside a tmux session,
+> `colosseum qa` automatically splits the current pane into one watcher pane
+> per gladiator and tails its event stream live (default: on). Pass
+> `--no-monitor` to disable. Outside of tmux this is a no-op.
+
 ---
 
 ## Step 0: Confirm `colosseum qa` is available
@@ -231,6 +236,7 @@ colosseum qa \
   [--brief] \
   [--spec {spec}] \
   [--lang {lang}] \
+  [--no-monitor] \
   --yes
 ```
 
@@ -243,9 +249,16 @@ Rules:
 - Include `--sequential` only when sequential mode chosen
 - Include `--brief` only when brief mode is on
 - Include `--spec` / `--lang` only when non-empty
+- Include `--no-monitor` ONLY if the user explicitly asked to disable the
+  tmux watcher panes; otherwise omit (monitor is on by default inside tmux)
 - Pass `--yes` so the wizard confirmation is enough — Colosseum won't ask again
 
 Execute via the Bash tool. Stream output to the user in real time.
+
+After the command starts (inside tmux), Colosseum will automatically split
+the current pane into one watcher pane per gladiator showing live progress.
+Tell the user where to find the final synthesized report:
+`.colosseum/qa/<run_id>/synthesized_report.md`.
 
 ---
 

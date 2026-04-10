@@ -29,6 +29,7 @@ from colosseum.services.prompt_contracts import (
     DEBATE_BEHAVIOR_GUARDRAIL,
     DEBATE_HONESTY_GUARDRAIL,
 )
+from colosseum.services.topic_guard import is_drifting, topic_token_set
 from colosseum.personas.prompting import (
     build_persona_expression_requirement,
     build_persona_prefix,
@@ -472,6 +473,11 @@ class DebateEngine:
                     f"Judge agenda title: {agenda.title}",
                     f"Judge question: {agenda.question}",
                     f"Why this issue matters now: {agenda.why_it_matters or 'The judge selected this as the next issue to resolve.'}",
+                    f"TOPIC ANCHOR: This agenda only matters insofar as it advances the original debate "
+                    f"topic — '{run.task.title}'. If the agenda question wanders into meta-debate "
+                    "(e.g. complaining that a peer 'failed to provide a plan' or arguing about prior "
+                    "rounds rather than the task), reframe your answer back to the original topic and "
+                    "say so explicitly in your response.",
                     "Structure your answer around the judge question first. Then explicitly state which peer points "
                     "you reject, which peer points you accept, and which specific claim from your side you believe survives scrutiny best.",
                 ]
@@ -480,15 +486,20 @@ class DebateEngine:
         if debate_transcript:
             prompt_parts.append(debate_transcript)
 
+        priority_focus = (
+            agenda.question if agenda else self._focus_hint(run)
+        ) or run.task.title
         prompt_parts.extend(
             [
                 f"Memory summary: {memory}",
-                f"Priority focus: {agenda.question if agenda else self._focus_hint(run)}",
+                f"Priority focus: {priority_focus}",
                 build_evidence_policy(run.encourage_internet_search),
                 (
                     f"SCOPE ENFORCEMENT: Every argument must be strictly relevant to '{run.task.title}'. "
                     "Do not introduce unrelated topics, generic best practices disconnected from this task, "
                     "or examples from outside this debate's scope. "
+                    "Do NOT spend the round arguing about peer behavior (e.g. 'agent X failed to "
+                    "provide a plan'); always re-anchor on the original task. "
                     "If a point does not directly address the judge's question or a peer's argument about this task, omit it."
                 ),
                 "Constraints: You MUST directly respond to other participants' arguments. "
@@ -599,12 +610,26 @@ class DebateEngine:
         )
 
     def _focus_hint(self, run: ExperimentRun) -> str:
+        topic = run.task.title or ""
+        tokens = topic_token_set(run)
+
+        def _on_topic(items: list[str]) -> list[str]:
+            if not items:
+                return []
+            if not tokens:
+                return items
+            return [item for item in items if item and not is_drifting(item, run, tokens=tokens)]
+
         if run.judge_trace and run.judge_trace[-1].focus_areas:
-            return self._compact_text(", ".join(run.judge_trace[-1].focus_areas[:3]), 120)
+            on_topic = _on_topic(list(run.judge_trace[-1].focus_areas[:3]))
+            if on_topic:
+                return self._compact_text(", ".join(on_topic), 120)
         if run.debate_rounds and run.debate_rounds[-1].summary.key_disagreements:
-            return self._compact_text(
-                ", ".join(run.debate_rounds[-1].summary.key_disagreements[:2]), 120
-            )
+            on_topic = _on_topic(list(run.debate_rounds[-1].summary.key_disagreements[:3]))
+            if on_topic:
+                return self._compact_text(", ".join(on_topic[:2]), 120)
+        if topic:
+            return self._compact_text(topic, 120)
         return "correctness, feasibility, maintainability"
 
     def _compact_text(self, text: str, limit: int) -> str:

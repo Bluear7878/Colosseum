@@ -400,7 +400,10 @@ function renderHallucinationWarnings(run) {
   rounds.forEach(function(round) {
     var adj = round.adjudication || {};
     (adj.hallucination_flags || []).forEach(function(flag) {
-      flags.push({ round: round.index, flag: flag });
+      flags.push({ round: round.index, flag: flag, kind: 'credibility' });
+    });
+    (adj.drift_flags || []).forEach(function(flag) {
+      flags.push({ round: round.index, flag: flag, kind: 'drift' });
     });
   });
   if (!flags.length) return;
@@ -408,8 +411,9 @@ function renderHallucinationWarnings(run) {
   var list = document.getElementById("hallucination-list");
   if (!list) return;
   list.innerHTML = flags.map(function(f) {
+    var label = f.kind === 'drift' ? 'Off-topic' : 'Credibility';
     return '<div class="hallucination-flag">' +
-      '<span class="hallucination-round">Round ' + f.round + '</span> ' +
+      '<span class="hallucination-round">Round ' + f.round + ' · ' + label + '</span> ' +
       esc(f.flag) +
     '</div>';
   }).join('');
@@ -495,13 +499,18 @@ function renderTimeline(run) {
         }).join("") + '</div>'
       : '<p class="muted">No argument was formally adopted in this round.</p>';
 
-    // Hallucination flags for this round
-    var flagsHtml = (adjudication.hallucination_flags || []).length
+    // Hallucination + drift flags for this round
+    var hallucinationItems = (adjudication.hallucination_flags || []).map(function(f) {
+      return '<div class="hallucination-flag">' + esc(f) + '</div>';
+    });
+    var driftItems = (adjudication.drift_flags || []).map(function(f) {
+      return '<div class="hallucination-flag">[Off-topic] ' + esc(f) + '</div>';
+    });
+    var allFlagItems = hallucinationItems.concat(driftItems);
+    var flagsHtml = allFlagItems.length
       ? '<div class="report-side-block">' +
           '<h4>Credibility Alerts</h4>' +
-          (adjudication.hallucination_flags || []).map(function(f) {
-            return '<div class="hallucination-flag">' + esc(f) + '</div>';
-          }).join('') +
+          allFlagItems.join('') +
         '</div>'
       : '';
 

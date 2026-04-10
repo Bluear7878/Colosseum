@@ -667,6 +667,7 @@ class RoundAdjudication(BaseModel):
     judge_note: str = ""
     moved_to_next_issue: bool = True
     hallucination_flags: list[str] = Field(default_factory=list)
+    drift_flags: list[str] = Field(default_factory=list)
 
 
 class DebateRound(BaseModel):

@@ -348,6 +348,9 @@ class ReportSynthesizer:
             if adj and adj.hallucination_flags:
                 for flag in adj.hallucination_flags[:1]:
                     highlights.append(f"[Credibility warning, Round {rnd.index}] {flag}")
+            if adj and adj.drift_flags:
+                for flag in adj.drift_flags[:1]:
+                    highlights.append(f"[Off-topic drift, Round {rnd.index}] {flag}")
         highlights = highlights[:6]
 
         # --- verdict_explanation ---

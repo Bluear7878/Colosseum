@@ -29,6 +29,11 @@ from colosseum.core.models import (
 from colosseum.services.budget import BudgetManager
 from colosseum.services.provider_runtime import ProviderRuntimeService
 from colosseum.services.prompt_contracts import JUDGE_RECORD_ONLY_GUARDRAIL
+from colosseum.services.topic_guard import (
+    anchor_question,
+    is_drifting,
+    topic_token_set,
+)
 
 
 class JudgeService:
@@ -197,7 +202,13 @@ class JudgeService:
                     "all arguments should be treated as unverified until grounded in the frozen context."
                 )
 
-        unresolved = debate_round.summary.unresolved_questions[:3]
+        # Drift detection: flag messages whose arguments wander away from the
+        # original task topic, and filter out drifting items so they cannot
+        # become the agenda for the next round.
+        drift_flags = self._collect_drift_flags(run, debate_round)
+        unresolved = self._filter_drifting_items(
+            run, debate_round.summary.unresolved_questions
+        )[:3]
         if adopted:
             adopted_labels = ", ".join(
                 f"{item.display_name} ({item.claim_kind})" for item in adopted[:2]
@@ -236,7 +247,55 @@ class JudgeService:
             judge_note=judge_note,
             moved_to_next_issue=moved_to_next_issue,
             hallucination_flags=hallucination_flags,
+            drift_flags=drift_flags,
         )
+
+    def _collect_drift_flags(
+        self,
+        run: ExperimentRun,
+        debate_round: DebateRound,
+    ) -> list[str]:
+        """Detect arguments that wander away from the original task topic."""
+        tokens = topic_token_set(run)
+        if not tokens:
+            return []
+        agent_names = {a.agent_id: a.display_name for a in run.agents}
+        flags: list[str] = []
+        for msg in debate_round.messages:
+            claims = [claim.text for claim in msg.critique_points] + [
+                claim.text for claim in msg.defense_points
+            ]
+            if not claims:
+                continue
+            drifting = [
+                text
+                for text in claims
+                if text and is_drifting(text, run, tokens=tokens)
+            ]
+            if not drifting:
+                continue
+            ratio = len(drifting) / len(claims)
+            if ratio >= 0.5:
+                agent_name = agent_names.get(msg.agent_id, msg.agent_id)
+                example = drifting[0].strip()
+                if len(example) > 140:
+                    example = example[:137].rstrip() + "..."
+                flags.append(
+                    f"{agent_name}: {len(drifting)} of {len(claims)} claim(s) drifted "
+                    f"from the topic '{run.task.title}'. Example: \"{example}\""
+                )
+        return flags
+
+    def _filter_drifting_items(
+        self,
+        run: ExperimentRun,
+        items: list[str],
+    ) -> list[str]:
+        """Drop list entries that look off-topic for the current run."""
+        tokens = topic_token_set(run)
+        if not tokens:
+            return list(items)
+        return [item for item in items if item and not is_drifting(item, run, tokens=tokens)]
 
     def _automated_decide(self, run: ExperimentRun) -> JudgeDecision:
         evaluations = run.plan_evaluations or self.evaluate_plans(
@@ -372,7 +431,12 @@ class JudgeService:
             "(4) budget pressure. "
             "Decide: continue_debate if agents are still producing relevant new support on this task; "
             "finalize if arguments are drifting off-topic, repeating without meaningful new support, or budget is high. "
-            "Your agenda and focus areas must be directly relevant to the debate topic above. "
+            "TOPIC ANCHOR: Your agenda question MUST explicitly reference the original task above and ask "
+            "agents to advance that task. Do NOT pick an agenda that re-litigates a previous round's "
+            "meta-complaints (e.g. 'agent X failed to provide a plan', 'evidence is missing'). "
+            "If the previous round's unresolved questions are themselves off-topic, override them and "
+            "set an agenda that drags the debate back to the original task. "
+            "Your focus_areas must also be directly relevant to the debate topic above. "
             "Submission-quality check: for each agent, assess whether specific facts, numbers, named tools, "
             "or technical details in their arguments are actually supported somewhere in the submitted record. "
             "Flag any agent that states precise claims (e.g., specific percentages, library names, "
@@ -424,6 +488,15 @@ class JudgeService:
         payload = result.json_payload
         payload_agenda = payload.get("agenda") if isinstance(payload.get("agenda"), dict) else None
         agenda = DebateAgenda.model_validate(payload_agenda) if payload_agenda else suggested_agenda
+        # Topic guard: if the AI judge proposed an agenda that itself drifts
+        # off the original task, fall back to the deterministic on-topic
+        # suggestion. Either way, anchor the question text to the topic so
+        # agents always see the task title in the agenda block.
+        topic = run.task.title or ""
+        tokens = topic_token_set(run)
+        if tokens and is_drifting(agenda.question, run, tokens=tokens):
+            agenda = suggested_agenda
+        agenda.question = anchor_question(agenda.question, topic)
         return JudgeDecision(
             mode=JudgeMode.AI,
             action=JudgeActionType.coerce(
@@ -756,7 +829,11 @@ class JudgeService:
         if not run.debate_rounds:
             return ["feasibility", "maintainability", "cost", "risk"]
         latest = run.debate_rounds[-1].summary
-        return latest.key_disagreements[:4] or ["implementation complexity", "traceability"]
+        # Filter drift here so JudgeDecision.focus_areas — which propagates
+        # into the next prompt and the report — never contains a leftover
+        # off-topic critique. See docs/gotchas.md §1.
+        on_topic = self._filter_drifting_items(run, list(latest.key_disagreements[:4]))
+        return on_topic or ["implementation complexity", "traceability"]
 
     def _build_ai_judge_record(self, run: ExperimentRun) -> str:
         """Render the debate artifacts that the AI judge is allowed to use."""
@@ -884,10 +961,12 @@ class JudgeService:
         instructions: str | None = None,
     ) -> DebateAgenda:
         focus_areas = self._focus_areas(run)
+        topic = run.task.title or ""
+        tokens = topic_token_set(run)
         if instructions:
             return DebateAgenda(
                 title=self._agenda_title(instructions),
-                question=instructions.strip(),
+                question=anchor_question(instructions.strip(), topic),
                 why_it_matters="The judge explicitly requested this issue for the next bounded round.",
                 focus_areas=focus_areas[:3] or [round_type.value],
                 source_plan_ids=[plan.plan_id for plan in run.plans[:2]],
@@ -901,14 +980,32 @@ class JudgeService:
         for candidate in self._agenda_candidates(run, round_type):
             if candidate.question.strip().lower() in used_questions:
                 continue
+            # Skip candidates that are themselves off-topic. These come from
+            # round-N-1 critiques and would otherwise drag round N+1 further
+            # away from the original task.
+            if tokens and is_drifting(candidate.question, run, tokens=tokens):
+                continue
+            candidate.question = anchor_question(candidate.question, topic)
             return candidate
 
-        fallback_question = f"Resolve the key disagreement around {', '.join(focus_areas[:2]) or 'implementation risk'}."
+        # Topic-anchored fallback so we never hand the agents an agenda that
+        # has no link to the original task.
+        if focus_areas:
+            on_topic_focus = [
+                area for area in focus_areas if not is_drifting(area, run, tokens=tokens)
+            ]
+        else:
+            on_topic_focus = []
+        focus_phrase = ", ".join(on_topic_focus[:2]) if on_topic_focus else (topic or "the original task")
+        fallback_question = anchor_question(
+            f"Which side has the strongest evidence for the next decision on {focus_phrase}?",
+            topic,
+        )
         return DebateAgenda(
             title=self._agenda_title(fallback_question),
             question=fallback_question,
-            why_it_matters="The judge still needs one crisp issue to compare the plans side by side.",
-            focus_areas=focus_areas[:3] or [round_type.value],
+            why_it_matters="The judge needs one crisp on-topic issue to compare the plans side by side.",
+            focus_areas=(on_topic_focus or focus_areas)[:3] or [round_type.value],
             source_plan_ids=[plan.plan_id for plan in run.plans[:2]],
         )
 
@@ -940,9 +1037,14 @@ class JudgeService:
 
         if run.debate_rounds:
             latest = run.debate_rounds[-1].summary
+            tokens = topic_token_set(run)
             for item in latest.key_disagreements[:3] + latest.unresolved_questions[:2]:
                 text = item.strip()
                 if not text:
+                    continue
+                # Skip leftover items that are themselves drift — otherwise
+                # round N+1 inherits the same off-topic agenda as round N.
+                if tokens and is_drifting(text, run, tokens=tokens):
                     continue
                 candidates.append(
                     DebateAgenda(

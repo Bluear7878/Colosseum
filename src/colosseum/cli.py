@@ -505,6 +505,136 @@ def _wrap(text: str, indent: int = 4, width: int = 76) -> str:
     )
 
 
+# ── User-level skill registration ────────────────────────────────
+#
+# `colosseum` ships four bundled Claude Code skills inside the package
+# (`src/colosseum/skills/`). On install we copy them into
+# `~/.claude/skills/` so the wizards (`/colosseum_qa`, `/colosseum`,
+# `/colosseum_code_review`, `/update_docs`) are usable from any working
+# directory, not just from inside the Colosseum repo.
+
+BUNDLED_SKILL_NAMES = (
+    "colosseum",
+    "colosseum_code_review",
+    "colosseum_qa",
+    "update_docs",
+)
+
+
+def _user_skills_dir() -> Path:
+    """Return ~/.claude/skills/ (created on demand)."""
+    return Path.home() / ".claude" / "skills"
+
+
+def _bundled_skills_root():
+    """Return the importlib.resources Traversable for bundled skills.
+
+    Returns None if the package was installed without skill data — the
+    caller should treat that as a no-op rather than crashing.
+    """
+    try:
+        import importlib.resources as ir
+
+        root = ir.files("colosseum").joinpath("skills")
+        if root.is_dir():
+            return root
+    except Exception:
+        return None
+    return None
+
+
+def _install_user_skills(force: bool = False, verbose: bool = False) -> dict[str, str]:
+    """Copy bundled SKILL.md files into ~/.claude/skills/<skill_name>/.
+
+    Returns a status dict mapping skill name → "installed" / "skipped" /
+    "missing". Existing user skills are preserved unless `force=True`.
+    Failures are caught per-skill so a single bad skill doesn't break the
+    whole install.
+    """
+    root = _bundled_skills_root()
+    if root is None:
+        return {name: "missing" for name in BUNDLED_SKILL_NAMES}
+
+    user_dir = _user_skills_dir()
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    status: dict[str, str] = {}
+    for name in BUNDLED_SKILL_NAMES:
+        try:
+            src = root.joinpath(name).joinpath("SKILL.md")
+            if not src.is_file():
+                status[name] = "missing"
+                continue
+            dest_dir = user_dir / name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / "SKILL.md"
+            if dest.exists() and not force:
+                status[name] = "skipped"
+                if verbose:
+                    print(f"    {DIM}{name}: already exists (use --force to overwrite){RST}")
+                continue
+            dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            status[name] = "installed"
+            if verbose:
+                print(f"    {GREEN}{name}: installed{RST}")
+        except Exception as exc:
+            status[name] = f"error: {exc}"
+            if verbose:
+                print(f"    {RED}{name}: error: {exc}{RST}")
+    return status
+
+
+def _user_skills_present() -> bool:
+    """Return True if every bundled skill is already registered for the user."""
+    user_dir = _user_skills_dir()
+    return all((user_dir / name / "SKILL.md").is_file() for name in BUNDLED_SKILL_NAMES)
+
+
+def _maybe_auto_install_user_skills() -> None:
+    """Silently install missing bundled skills on first CLI run.
+
+    Called from main(). Returns immediately if everything is already in
+    place. Failures are silently ignored — explicit `colosseum install-skills`
+    is the user-visible recovery path.
+    """
+    try:
+        if _user_skills_present():
+            return
+        _install_user_skills(force=False, verbose=False)
+    except Exception:
+        pass
+
+
+def cmd_install_skills(args: argparse.Namespace) -> None:
+    """Install or refresh bundled Claude Code skills under ~/.claude/skills/."""
+    _print_header()
+    force = bool(getattr(args, "force", False))
+    print(f"  {BOLD}Installing bundled skills into{RST} {_user_skills_dir()}")
+    if force:
+        print(f"  {GOLD}(force mode — existing skills will be overwritten){RST}")
+    print()
+    status = _install_user_skills(force=force, verbose=True)
+    print()
+    installed = sum(1 for v in status.values() if v == "installed")
+    skipped = sum(1 for v in status.values() if v == "skipped")
+    missing = sum(1 for v in status.values() if v == "missing")
+    errors = sum(1 for v in status.values() if v.startswith("error"))
+    summary = (
+        f"  {GREEN}{installed} installed{RST}, "
+        f"{DIM}{skipped} skipped{RST}, "
+        f"{GOLD}{missing} missing{RST}, "
+        f"{RED}{errors} errors{RST}"
+    )
+    print(summary)
+    if missing:
+        print(
+            f"\n  {GOLD}Note:{RST} 'missing' usually means the package was installed "
+            f"without skill data. Reinstall with `pip install -e .` from the "
+            f"Colosseum repo to fix."
+        )
+    print()
+
+
 # ── Subcommands ──────────────────────────────────────────────────
 
 
@@ -1248,6 +1378,23 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
         summary.append(status)
         print()
+
+    # Install bundled wizard skills into ~/.claude/skills/ so /colosseum_qa,
+    # /colosseum, /colosseum_code_review, /update_docs are usable from any
+    # working directory.
+    print(f"  {BOLD}{'─' * 50}{RST}")
+    print(f"  {GOLD}{BOLD}WIZARD SKILLS{RST}")
+    print(f"  {DIM}Registering bundled skills under {_user_skills_dir()}{RST}\n")
+    skills_status = _install_user_skills(force=False, verbose=True)
+    sk_installed = sum(1 for v in skills_status.values() if v == "installed")
+    sk_skipped = sum(1 for v in skills_status.values() if v == "skipped")
+    sk_missing = sum(1 for v in skills_status.values() if v == "missing")
+    print(
+        f"\n    {GREEN}{sk_installed} installed{RST}, "
+        f"{DIM}{sk_skipped} already present{RST}, "
+        f"{GOLD}{sk_missing} missing{RST}"
+    )
+    print()
 
     # Summary
     print(f"  {BOLD}{'─' * 50}{RST}")
@@ -3689,6 +3836,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore the cached auth status and re-probe every provider.",
     )
 
+    # install-skills
+    p_install_skills = sub.add_parser(
+        "install-skills",
+        help="Install bundled wizard skills into ~/.claude/skills/ (auto-runs on first CLI use)",
+    )
+    p_install_skills.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite existing user-level SKILL.md files",
+    )
+
     # delete
     p_delete = sub.add_parser("delete", help="Delete a past battle run")
     p_delete.add_argument("run_id", help="Run ID (or prefix), or 'all' to delete all runs")
@@ -4041,6 +4200,12 @@ def main() -> None:
         parser.print_help()
         return
 
+    # Auto-install bundled wizard skills into ~/.claude/skills/ on first run.
+    # No-op if already present. Skipped for `install-skills` itself (it does
+    # the work explicitly with progress output).
+    if args.command != "install-skills":
+        _maybe_auto_install_user_skills()
+
     commands = {
         "serve": cmd_serve,
         "setup": cmd_setup,
@@ -4053,6 +4218,7 @@ def main() -> None:
         "show": cmd_show,
         "delete": cmd_delete,
         "check": cmd_check,
+        "install-skills": cmd_install_skills,
         "debate": cmd_debate,
         "monitor": cmd_monitor,
         "review": cmd_review,

@@ -34,7 +34,12 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-colosseum = ["web/*", "personas/builtin/*.md"]
+colosseum = [
+  "web/*",
+  "personas/builtin/*.md",
+  "skills/*/SKILL.md",
+  "skills/**/*.md",
+]
 
 [tool.ruff]
 line-length = 100

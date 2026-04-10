@@ -313,3 +313,47 @@ def test_cli_wrapper_debate_operation_still_adds_scaffolding():
     assert "DEBATE TASK" in prompt
     assert "Respond with valid JSON containing these fields" in prompt
     assert "DEBATE TOPIC" in prompt
+
+
+def test_install_user_skills_copies_all_bundled_skills(tmp_path, monkeypatch):
+    """`_install_user_skills` should copy every bundled SKILL.md into ~/.claude/skills/."""
+    from colosseum import cli as _cli
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    status = _cli._install_user_skills(force=False, verbose=False)
+
+    user_skills = fake_home / ".claude" / "skills"
+    assert user_skills.is_dir()
+    for name in _cli.BUNDLED_SKILL_NAMES:
+        assert (user_skills / name / "SKILL.md").is_file(), f"{name} not installed"
+        assert status[name] == "installed", f"{name} status was {status[name]!r}"
+
+    # Re-running without --force should skip everything.
+    status_again = _cli._install_user_skills(force=False, verbose=False)
+    assert all(v == "skipped" for v in status_again.values())
+
+    # --force should overwrite.
+    custom_path = user_skills / "colosseum_qa" / "SKILL.md"
+    custom_path.write_text("CUSTOMIZED", encoding="utf-8")
+    status_force = _cli._install_user_skills(force=True, verbose=False)
+    assert status_force["colosseum_qa"] == "installed"
+    assert "CUSTOMIZED" not in custom_path.read_text(encoding="utf-8")
+
+
+def test_user_skills_present_detects_missing(tmp_path, monkeypatch):
+    """`_user_skills_present` returns False when any bundled skill is absent."""
+    from colosseum import cli as _cli
+
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    assert _cli._user_skills_present() is False
+    _cli._install_user_skills(force=False, verbose=False)
+    assert _cli._user_skills_present() is True
+
+    # Delete one and re-check
+    (fake_home / ".claude" / "skills" / "colosseum_qa" / "SKILL.md").unlink()
+    assert _cli._user_skills_present() is False

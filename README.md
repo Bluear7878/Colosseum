@@ -25,7 +25,7 @@
 
 > Not just another chatbot UI — Colosseum is a **structured debate platform** designed for real workflows.
 
-| Problem | Colosseum's Answer |
+| Problem | AI Colosseum debate's Answer |
 |---|---|
 | "Which model gives a better plan?" | Run them side by side on the **same frozen context** |
 | "How do I compare fairly?" | Independent plan generation — no agent sees another's plan first |
@@ -33,6 +33,7 @@
 | "I can't trace how a decision was made" | Full artifact trail: plans, rounds, judge agendas, adopted arguments, verdicts |
 | "I want control over judging" | Choose **automated**, **AI judge**, or **human judge** mode |
 | "I need a code review, not just a debate" | Multi-phase **code review** with 6 configurable review phases |
+| "I want multiple AI agents to QA my project in parallel" | **QA ensemble mode** — gladiators run in parallel on disjoint GPU slices, then a judge merges their findings into one canonical, deduplicated report |
 
 ---
 
@@ -55,6 +56,9 @@ Mix and match providers in the same debate.
 ### 📝 Multi-Phase Code Review
 6 configurable review phases: project rules, implementation, architecture, security/performance, test coverage, and red team adversarial testing.
 
+### 🧪 QA Ensemble Mode
+Multiple gladiators run the **target project's own `/qa` skill** in parallel on **disjoint GPU slices**. A judge merges their findings into one canonical, deduplicated, REPRODUCED-only QA report. Cooperative — there is no winner.
+
 </td>
 <td width="50%" valign="top">
 
@@ -71,7 +75,10 @@ AI-synthesized final reports with key conclusions, verdict explanations, and deb
 Real token counts from provider output with per-agent cost breakdown. Always-on cost display in CLI results.
 
 ### 📺 Live Monitoring
-tmux-based live monitor panel for watching debates in real time.
+tmux-based live monitor panel for watching debates and QA runs in real time. QA mode auto-spawns one watcher pane per gladiator.
+
+### 🪄 Bundled Wizard Skills
+Four Claude Code wizard skills auto-installed under `~/.claude/skills/` on first run: `/colosseum`, `/colosseum_code_review`, `/colosseum_qa`, `/update_docs`.
 
 </td>
 </tr>
@@ -111,31 +118,46 @@ colosseum serve
 
 > Opens at **http://127.0.0.1:8000/** — pick models, assign personas, set judge mode, and watch the debate unfold live with real-time SSE streaming.
 
+### Step 4: Run a QA ensemble against any project that ships a `/qa` skill
+
+```bash
+colosseum qa \
+  -t "Pre-release regression sweep" \
+  --target /path/to/your/target-project \
+  -g claude:claude-opus-4-6 claude:claude-sonnet-4-6 \
+  -j claude:claude-opus-4-6 \
+  --gpus-per-gladiator 2
+```
+
+> Each gladiator runs as a real `claude --print` subprocess with its own disjoint slice of GPUs (no collisions). Non-Claude gladiators run via a mediated executor. After all finish, the judge merges their reports into one canonical, REPRODUCED-only QA report. Inside tmux, watcher panes auto-spawn — one per gladiator.
+
 ---
 
-## 🌟 What Makes Colosseum Different
+## 🌟 What Makes AI Colosseum debate Different
 
-| Other tools | Colosseum |
+| Other tools | AI Colosseum debate |
 |---|---|
 | Models see each other's output before responding | **Frozen context** — every agent plans independently from the same snapshot |
 | Debates run until someone gives up | **Bounded rounds** with novelty checks, convergence detection, and budget limits |
 | Verdicts are vibes-based | **Evidence-first judging** — unsupported assertions are penalized; adopted arguments are logged |
 | No way to reproduce a result | **Full artifact trail**: plans, round transcripts, judge agendas, adopted arguments, verdict |
 | One judge, one mode | Three judge modes: heuristic **automated**, any-model **AI judge**, or **human pause/resume** |
+| QA tools test sequentially with one agent | **QA ensemble** — multiple gladiators in parallel on disjoint GPU slices, judge dedups findings into one report |
 
-- **vs ChatGPT Arena / lmsys**: Those platforms route a single prompt to two models and ask humans to vote. Colosseum runs a *structured multi-round debate* on a topic you define, with your own context, and produces a traceable verdict with evidence.
+- **vs ChatGPT Arena / lmsys**: Those platforms route a single prompt to two models and ask humans to vote. AI Colosseum debate runs a *structured multi-round debate* on a topic you define, with your own context, and produces a traceable verdict with evidence.
 - **Personas built-in**: Assign Karpathy, Andrew Ng, a security researcher, or your own custom persona to each gladiator — voices that meaningfully shift argument framing.
 - **Code review mode**: Six configurable phases (conventions → implementation → architecture → security → tests → red team) turn the debate engine into a multi-reviewer code audit.
+- **QA ensemble mode**: Drive any project's own `.claude/skills/qa` skill from N gladiators in parallel and merge the union of findings — cooperative, not competitive. Claude gladiators dispatch their own sub-agents natively; Gemini/Codex run via the mediated executor.
 - **Your infra**: Use cloud APIs or local Ollama models interchangeably. No data leaves your machine unless you choose a cloud provider.
 
 ---
 
 ## 🤝 Community & Support
 
-If Colosseum has been useful to you, a ⭐ on GitHub goes a long way.
+If AI Colosseum debate has been useful to you, a ⭐ on GitHub goes a long way.
 
-- **Bug reports & feature requests** → [GitHub Issues](https://github.com/Bluear7878/Colosseum/issues)
-- **Contributions welcome** — PRs for new provider adapters, personas, judge modes, and UI improvements are appreciated. Check [`docs/architecture/overview.md`](docs/architecture/overview.md) before diving in.
+- **Bug reports & feature requests** → [GitHub Issues](https://github.com/Bluear7878/AI-Colosseum-Debate/issues)
+- **Contributions welcome** — PRs for new provider adapters, personas, judge modes, QA executors, and UI improvements are appreciated. Check [`docs/architecture/overview.md`](docs/architecture/overview.md) before diving in.
 
 ---
 
@@ -170,6 +192,7 @@ python -m pip install -e '.[dev]'
 
 ```bash
 # Interactive setup — install & authenticate all supported CLI providers
+# Also auto-installs the four bundled wizard skills under ~/.claude/skills/
 colosseum setup
 
 # Set up specific providers only
@@ -177,6 +200,24 @@ colosseum setup claude codex
 
 # Verify installed tools
 colosseum check
+```
+
+### Wizard Skills Auto-Install
+
+On the very first run of any `colosseum` command, four Claude Code wizard skills are silently installed under `~/.claude/skills/` so you can call them from anywhere:
+
+| Skill | Trigger | Purpose |
+|---|---|---|
+| `/colosseum` | "colosseum debate" | Interactive debate wizard |
+| `/colosseum_code_review` | "colosseum code review" | Multi-phase code review wizard |
+| `/colosseum_qa` | "colosseum qa" / "QA ensemble" | QA ensemble wizard |
+| `/update_docs` | "update docs" | Project documentation refresh wizard |
+
+If you ever need to refresh or force-overwrite them:
+
+```bash
+colosseum install-skills            # install only the missing ones
+colosseum install-skills --force    # overwrite even user-customized SKILL.md
 ```
 
 ### Launch the Web UI
@@ -228,15 +269,44 @@ colosseum review \
   -f src/payment.py src/auth.py
 ```
 
+### Run a QA Ensemble
+
+The target project must contain a `.claude/skills/qa/SKILL.md` describing how it wants to be QA'd. Each gladiator runs that skill in parallel on its own GPU slice.
+
+```bash
+# 2 Claude gladiators on disjoint GPU slices, judge merges the union
+colosseum qa \
+  -t "Pre-release regression sweep" \
+  --target /path/to/your/target-project \
+  -g claude:claude-opus-4-6 claude:claude-sonnet-4-6 \
+  -j claude:claude-opus-4-6 \
+  --gpus-per-gladiator 2
+
+# Cross-vendor ensemble: Claude (native subagents) + Gemini/Codex (mediated)
+colosseum qa \
+  -t "Cross-vendor QA pass" \
+  --target /path/to/your/target-project \
+  -g claude:claude-opus-4-6 gemini:gemini-2.5-pro codex:gpt-5.4 \
+  -j claude:claude-opus-4-6 \
+  --gpus-per-gladiator 1
+
+# Brief mode (code analysis only, no GPU execution)
+colosseum qa -t "Quick smoke" --target /path/to/target -g claude:claude-haiku-4-5-20251001 --brief
+```
+
+Inside tmux, watcher panes auto-spawn — one per gladiator showing live progress. The synthesized canonical report lands at `.colosseum/qa/<run_id>/synthesized_report.md`.
+
 ---
 
 ## 🖥️ CLI Commands
 
 ```
-colosseum setup [providers...]       Install & authenticate CLI providers
+colosseum setup [providers...]       Install & authenticate CLI providers (also installs wizard skills)
+colosseum install-skills [--force]   Install bundled wizard skills under ~/.claude/skills/
 colosseum serve                      Start the web UI server
 colosseum debate                     Run a debate from the terminal
 colosseum review                     Run a multi-phase code review
+colosseum qa                         Run a QA ensemble against a target project
 colosseum monitor [run_id]           Open live tmux monitor for an active debate
 colosseum models                     List available models across all providers
 colosseum personas                   List available personas
@@ -276,6 +346,28 @@ colosseum local-runtime status       Inspect managed local-model runtime state
 | `--lang` | Response language (`ko`, `en`, `ja`, etc.) |
 | `--rules` | Path to project rules file |
 | `--timeout` | Per-phase timeout in seconds |
+
+### QA Options
+
+| Flag | Description |
+|---|---|
+| `-t`, `--topic` | One-line QA run description (required) |
+| `--target` | Path to target project (must contain `.claude/skills/qa/SKILL.md`) (required) |
+| `--qa-args` | Args forwarded to the target's `/qa` skill |
+| `-g` | Gladiator specs in `provider:model` format. Claude → real `claude --print` subprocess; non-Claude → mediated executor |
+| `-j`, `--judge` | Judge model used to merge gladiator findings |
+| `--gpus` | Comma-separated GPU indices to force (default: auto-detect) |
+| `--gpus-per-gladiator` | GPUs per gladiator slice (default: even split) |
+| `--sequential` | Run gladiators one at a time instead of parallel disjoint slices |
+| `--max-budget-usd` | Hard per-gladiator spend cap (default: $25) |
+| `--max-gladiator-minutes` | Soft timeout per gladiator (default: 90) |
+| `--stall-timeout-minutes` | Stall detection threshold (default: 10) |
+| `--brief` | Code analysis only, no GPU execution |
+| `--monitor` / `--no-monitor` | Auto-spawn tmux watcher panes (default: on inside tmux) |
+| `--spec` | Forward `--spec NAME` to the `/qa` skill |
+| `--lang` | Response language |
+| `--allow-dirty-target` | Skip the dirty-worktree warning |
+| `--no-stash-safety` | Skip the git stash safety net |
 
 ---
 

@@ -25,7 +25,7 @@
 
 > 또 하나의 챗봇 UI가 아닙니다 — Colosseum은 실제 업무 흐름을 위해 설계된 **구조화된 토론 플랫폼**입니다.
 
-| 문제 | Colosseum의 답 |
+| 문제 | AI Colosseum debate의 답 |
 |---|---|
 | "어느 모델이 더 나은 플랜을 줄까?" | **동일한 동결 컨텍스트** 위에서 나란히 실행 |
 | "공정하게 비교하려면?" | 독립적인 플랜 생성 — 어느 에이전트도 다른 에이전트의 플랜을 먼저 보지 못함 |
@@ -33,6 +33,7 @@
 | "결정이 어떻게 내려졌는지 추적할 수 없다" | 플랜, 라운드, 판사 아젠다, 채택된 주장, 판결까지의 전체 아티팩트 추적 |
 | "판정 방식을 제어하고 싶다" | **자동 판사**, **AI 판사**, **사람 판사** 세 가지 모드 선택 |
 | "단순 토론이 아니라 코드 리뷰가 필요하다" | 6개의 설정 가능한 리뷰 단계를 가진 다단계 **코드 리뷰** |
+| "여러 AI가 병렬로 내 프로젝트를 QA했으면 한다" | **QA 앙상블 모드** — 검투사들이 disjoint GPU 슬라이스에서 병렬 실행, 판사가 발견을 합집합으로 dedup해서 단일 canonical 리포트 생성 |
 
 ---
 
@@ -55,6 +56,9 @@ Claude · Codex · Gemini · Ollama · 커스텀 CLI
 ### 📝 다단계 코드 리뷰
 6개의 설정 가능한 리뷰 단계: 프로젝트 규칙, 구현, 아키텍처, 보안/성능, 테스트 커버리지, 레드팀 적대적 테스트.
 
+### 🧪 QA 앙상블 모드
+여러 검투사가 **타겟 프로젝트의 자체 `/qa` 스킬**을 **disjoint GPU 슬라이스**에서 병렬 실행. 판사가 발견을 합집합으로 dedup해서 하나의 canonical, REPRODUCED-only QA 리포트로 합성. 협력적이고 승자 없음.
+
 </td>
 <td width="50%" valign="top">
 
@@ -71,7 +75,10 @@ AI가 합성한 최종 리포트 — 핵심 결론, 판결 설명, 토론 하이
 프로바이더 출력에서 실제 토큰 수를 가져오고 에이전트별 비용을 분해합니다. CLI 결과에서 항상 표시됩니다.
 
 ### 📺 실시간 모니터링
-tmux 기반 라이브 모니터 패널로 토론을 실시간 관찰.
+tmux 기반 라이브 모니터 패널로 토론과 QA 앙상블을 실시간 관찰. QA 모드는 검투사당 watcher pane을 자동으로 띄움.
+
+### 🪄 번들 위저드 스킬
+첫 실행 시 4개의 Claude Code 위저드 스킬이 `~/.claude/skills/` 아래 자동 설치: `/colosseum`, `/colosseum_code_review`, `/colosseum_qa`, `/update_docs`.
 
 </td>
 </tr>
@@ -111,31 +118,46 @@ colosseum serve
 
 > **http://127.0.0.1:8000/** 에서 열립니다 — 모델 선택, 페르소나 할당, 판사 모드 설정, SSE 실시간 스트리밍으로 토론이 펼쳐지는 것을 관찰.
 
+### 4단계: `/qa` 스킬을 가진 프로젝트에 QA 앙상블 실행
+
+```bash
+colosseum qa \
+  -t "릴리즈 전 회귀 스윕" \
+  --target /path/to/your/target-project \
+  -g claude:claude-opus-4-6 claude:claude-sonnet-4-6 \
+  -j claude:claude-opus-4-6 \
+  --gpus-per-gladiator 2
+```
+
+> 각 검투사가 자체 disjoint GPU 슬라이스를 가진 real `claude --print` 서브프로세스로 실행 (충돌 없음). 비-Claude 검투사는 mediated executor로 실행. 모두 끝나면 판사가 리포트를 합집합 dedup해서 하나의 canonical REPRODUCED-only QA 리포트 생성. tmux 안에서는 검투사당 watcher pane이 자동으로 뜸.
+
 ---
 
-## 🌟 Colosseum이 다른 점
+## 🌟 AI Colosseum debate가 다른 점
 
-| 다른 도구들 | Colosseum |
+| 다른 도구들 | AI Colosseum debate |
 |---|---|
 | 모델이 서로의 출력을 보고 나서 응답 | **동결 컨텍스트** — 모든 에이전트가 같은 스냅샷에서 독립적으로 플래닝 |
 | 누군가 포기할 때까지 토론이 계속 | 새로움 검사, 수렴 감지, 예산 한도가 있는 **제한된 라운드** |
 | 판결이 "느낌" 기반 | **근거 우선 판정** — 근거 없는 주장은 감점, 채택된 주장은 기록 |
 | 결과를 재현할 방법이 없음 | **전체 아티팩트 추적**: 플랜, 라운드 기록, 판사 아젠다, 채택된 주장, 판결 |
 | 판사 하나, 모드 하나 | 세 가지 판사 모드: 휴리스틱 **자동**, 임의 모델 **AI 판사**, **사람 일시정지/재개** |
+| QA 도구는 한 번에 한 에이전트만 순차 실행 | **QA 앙상블** — 검투사들이 disjoint GPU 슬라이스에서 병렬 실행, 판사가 발견을 한 리포트로 dedup |
 
-- **vs ChatGPT Arena / lmsys**: 그쪽은 단일 프롬프트를 두 모델에 보내고 사람들이 투표하게 합니다. Colosseum은 당신이 정의한 주제에, 당신의 컨텍스트로, *구조화된 다중 라운드 토론*을 수행하고 근거가 있는 추적 가능한 판결을 만듭니다.
+- **vs ChatGPT Arena / lmsys**: 그쪽은 단일 프롬프트를 두 모델에 보내고 사람들이 투표하게 합니다. AI Colosseum debate는 당신이 정의한 주제에, 당신의 컨텍스트로, *구조화된 다중 라운드 토론*을 수행하고 근거가 있는 추적 가능한 판결을 만듭니다.
 - **내장 페르소나**: 각 검투사에게 Karpathy, Andrew Ng, 보안 연구자, 또는 커스텀 페르소나를 할당하여 의미 있게 달라지는 논거 프레이밍을 얻습니다.
 - **코드 리뷰 모드**: 6개의 설정 가능한 단계(컨벤션 → 구현 → 아키텍처 → 보안 → 테스트 → 레드팀)가 토론 엔진을 다중 리뷰어 코드 감사로 바꿉니다.
+- **QA 앙상블 모드**: 어떤 프로젝트의 `.claude/skills/qa` 스킬이라도 N개 검투사에서 병렬로 구동하고 발견의 합집합을 dedup — 협력적, 비경쟁적. Claude 검투사는 native sub-agent dispatch, Gemini/Codex는 mediated executor로 동작.
 - **내 인프라**: 클라우드 API와 로컬 Ollama 모델을 자유롭게 혼용. 클라우드 프로바이더를 선택하지 않는 한 데이터가 기기 밖으로 나가지 않습니다.
 
 ---
 
 ## 🤝 커뮤니티 & 지원
 
-Colosseum이 도움이 되었다면 GitHub에서 ⭐가 큰 힘이 됩니다.
+AI Colosseum debate가 도움이 되었다면 GitHub에서 ⭐가 큰 힘이 됩니다.
 
-- **버그 리포트 & 기능 요청** → [GitHub Issues](https://github.com/Bluear7878/Colosseum/issues)
-- **기여 환영** — 새로운 프로바이더 어댑터, 페르소나, 판사 모드, UI 개선 PR을 환영합니다. 시작 전 [`docs/architecture/overview.md`](docs/architecture/overview.md)를 읽어주세요.
+- **버그 리포트 & 기능 요청** → [GitHub Issues](https://github.com/Bluear7878/AI-Colosseum-Debate/issues)
+- **기여 환영** — 새로운 프로바이더 어댑터, 페르소나, 판사 모드, QA executor, UI 개선 PR을 환영합니다. 시작 전 [`docs/architecture/overview.md`](docs/architecture/overview.md)를 읽어주세요.
 
 ---
 
@@ -170,6 +192,7 @@ python -m pip install -e '.[dev]'
 
 ```bash
 # 대화형 설정 — 지원되는 모든 CLI 프로바이더 설치 및 인증
+# 4개 번들 위저드 스킬도 ~/.claude/skills/에 자동 설치
 colosseum setup
 
 # 특정 프로바이더만 설정
@@ -177,6 +200,24 @@ colosseum setup claude codex
 
 # 설치된 도구 확인
 colosseum check
+```
+
+### 위저드 스킬 자동 설치
+
+`colosseum` 명령을 처음 실행하면 4개의 Claude Code 위저드 스킬이 `~/.claude/skills/` 아래 silent 설치되어 어디서든 호출 가능합니다:
+
+| 스킬 | 트리거 | 용도 |
+|---|---|---|
+| `/colosseum` | "colosseum debate" | 토론 위저드 |
+| `/colosseum_code_review` | "colosseum code review" | 다단계 코드 리뷰 위저드 |
+| `/colosseum_qa` | "colosseum qa" / "QA ensemble" | QA 앙상블 위저드 |
+| `/update_docs` | "update docs" | 프로젝트 문서 갱신 위저드 |
+
+새로 받거나 강제 덮어쓰려면:
+
+```bash
+colosseum install-skills            # 누락된 것만 설치
+colosseum install-skills --force    # 사용자 커스터마이즈도 덮어쓰기
 ```
 
 ### 웹 UI 실행
@@ -228,15 +269,44 @@ colosseum review \
   -f src/payment.py src/auth.py
 ```
 
+### QA 앙상블 실행
+
+타겟 프로젝트에 `.claude/skills/qa/SKILL.md`가 있어야 합니다 — 어떻게 QA 받고 싶은지를 그 스킬이 정의합니다. 각 검투사가 자체 GPU 슬라이스에서 그 스킬을 병렬 실행합니다.
+
+```bash
+# 2개의 Claude 검투사 + disjoint GPU 슬라이스, 판사가 합집합 dedup
+colosseum qa \
+  -t "릴리즈 전 회귀 스윕" \
+  --target /path/to/your/target-project \
+  -g claude:claude-opus-4-6 claude:claude-sonnet-4-6 \
+  -j claude:claude-opus-4-6 \
+  --gpus-per-gladiator 2
+
+# Cross-vendor 앙상블: Claude (native subagent) + Gemini/Codex (mediated)
+colosseum qa \
+  -t "Cross-vendor QA 패스" \
+  --target /path/to/your/target-project \
+  -g claude:claude-opus-4-6 gemini:gemini-2.5-pro codex:gpt-5.4 \
+  -j claude:claude-opus-4-6 \
+  --gpus-per-gladiator 1
+
+# Brief 모드 (코드 분석만, GPU 실행 없음)
+colosseum qa -t "빠른 smoke" --target /path/to/target -g claude:claude-haiku-4-5-20251001 --brief
+```
+
+tmux 안에서는 검투사당 watcher pane이 자동으로 떠서 라이브 진행 상황을 보여줍니다. 합성된 canonical 리포트는 `.colosseum/qa/<run_id>/synthesized_report.md`에 저장됩니다.
+
 ---
 
 ## 🖥️ CLI 명령어
 
 ```
-colosseum setup [providers...]       CLI 프로바이더 설치 및 인증
+colosseum setup [providers...]       CLI 프로바이더 설치 및 인증 (위저드 스킬 자동 설치 포함)
+colosseum install-skills [--force]   ~/.claude/skills/에 번들 위저드 스킬 설치
 colosseum serve                      웹 UI 서버 시작
 colosseum debate                     터미널에서 토론 실행
 colosseum review                     다단계 코드 리뷰 실행
+colosseum qa                         타겟 프로젝트에 QA 앙상블 실행
 colosseum monitor [run_id]           활성 토론의 tmux 라이브 모니터 열기
 colosseum models                     모든 프로바이더의 가용 모델 나열
 colosseum personas                   가용 페르소나 나열
@@ -276,6 +346,28 @@ colosseum local-runtime status       관리되는 로컬 모델 런타임 상태
 | `--lang` | 응답 언어 (`ko`, `en`, `ja` 등) |
 | `--rules` | 프로젝트 규칙 파일 경로 |
 | `--timeout` | 단계별 타임아웃 (초) |
+
+### QA 옵션
+
+| 플래그 | 설명 |
+|---|---|
+| `-t`, `--topic` | QA 실행 한 줄 설명 (필수) |
+| `--target` | 타겟 프로젝트 경로 (`.claude/skills/qa/SKILL.md` 필수) (필수) |
+| `--qa-args` | 타겟의 `/qa` 스킬에 전달할 인자 |
+| `-g` | `provider:model` 포맷의 검투사. Claude → real `claude --print` 서브프로세스, 비-Claude → mediated executor |
+| `-j`, `--judge` | 검투사 발견을 합성할 판사 모델 |
+| `--gpus` | 강제 사용할 GPU 인덱스 csv (기본: 자동 감지) |
+| `--gpus-per-gladiator` | 검투사당 GPU 슬라이스 크기 (기본: 균등 분할) |
+| `--sequential` | 병렬 disjoint 슬라이스 대신 순차 실행 |
+| `--max-budget-usd` | 검투사당 강제 비용 cap (기본: $25) |
+| `--max-gladiator-minutes` | 검투사당 soft 타임아웃 (기본: 90) |
+| `--stall-timeout-minutes` | stall 감지 임계값 (기본: 10) |
+| `--brief` | 코드 분석만, GPU 실행 없음 |
+| `--monitor` / `--no-monitor` | tmux watcher pane 자동 spawn (tmux 안에서 기본 on) |
+| `--spec` | `/qa` 스킬에 `--spec NAME` 전달 |
+| `--lang` | 응답 언어 |
+| `--allow-dirty-target` | dirty worktree 경고 스킵 |
+| `--no-stash-safety` | git stash safety net 스킵 |
 
 ---
 

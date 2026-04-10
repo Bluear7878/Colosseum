@@ -2,11 +2,21 @@
 """Live pretty-print a Colosseum QA gladiator's stream.jsonl or mediated_trace.jsonl.
 
 Usage:
-    qa_watch.py <jsonl_path> claude     # for ClaudeQAExecutor stream.jsonl
-    qa_watch.py <jsonl_path> mediated   # for MediatedQAExecutor mediated_trace.jsonl
+    qa_watch.py <jsonl_path> claude [--exit-when-done]
+    qa_watch.py <jsonl_path> mediated [--exit-when-done]
+
+`--exit-when-done` makes the watcher self-terminate once the QA run's
+`qa_run.json` reports a terminal status (`completed` or `failed`). The
+run.json path is inferred from the jsonl path:
+
+    .colosseum/qa/<run_id>/gladiators/<gid>/{stream,mediated_trace}.jsonl
+                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                           jsonl is parents[0]
+    .colosseum/qa/<run_id>/qa_run.json       <-- parents[2] / qa_run.json
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -19,6 +29,11 @@ RED = "\033[31m"
 DIM = "\033[2m"
 BOLD = "\033[1m"
 RST = "\033[0m"
+
+# When --exit-when-done is active, how long (seconds) to keep tailing
+# the jsonl after we observe a terminal run status, so the final events
+# land in the pane before it closes.
+TERMINAL_GRACE_SECONDS = 3.0
 
 
 def pretty_claude(ev: dict) -> None:
@@ -99,47 +114,126 @@ def pretty_mediated(ev: dict) -> None:
         print(f"  {DIM}{obs[:240]}{RST}")
 
 
-def main() -> None:
-    if len(sys.argv) < 2:
-        print("usage: qa_watch.py <jsonl_path> [claude|mediated]")
-        sys.exit(1)
-    path = Path(sys.argv[1])
-    mode = sys.argv[2] if len(sys.argv) > 2 else "claude"
+def _infer_run_json_path(jsonl_path: Path) -> Path | None:
+    """Return the qa_run.json sibling for a gladiator jsonl path.
 
+    .colosseum/qa/<run>/gladiators/<gid>/stream.jsonl
+                        -> parents[0] = <gid> dir
+                        -> parents[1] = gladiators/
+                        -> parents[2] = <run>/
+                        -> parents[2] / qa_run.json
+    """
+    try:
+        return jsonl_path.parents[2] / "qa_run.json"
+    except IndexError:
+        return None
+
+
+def _read_run_status(run_json_path: Path) -> str | None:
+    """Return the current status string from qa_run.json, or None on error."""
+    try:
+        data = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    status = data.get("status")
+    return status if isinstance(status, str) else None
+
+
+def _render_lines(lines: list[str], mode: str) -> None:
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        try:
+            if mode == "claude":
+                pretty_claude(ev)
+            else:
+                pretty_mediated(ev)
+        except Exception as exc:
+            print(f"{RED}[render error] {exc}{RST}")
+
+
+def watch(path: Path, mode: str, exit_when_done: bool) -> int:
+    """Tail `path` and pretty-print new events forever (or until the run's
+    qa_run.json reports a terminal status when `exit_when_done` is True).
+    """
     print(f"{BOLD}== watching {path.name} ({mode}) =={RST}", flush=True)
 
+    run_json_path = _infer_run_json_path(path) if exit_when_done else None
+    if exit_when_done and run_json_path:
+        print(f"{DIM}   auto-exit when {run_json_path} reports completed/failed{RST}", flush=True)
+
     seen = 0
+    terminal_first_seen_at: float | None = None
+
     while True:
         if path.exists():
             try:
                 with path.open(encoding="utf-8") as fh:
                     lines = fh.readlines()
-            except Exception:
-                time.sleep(1)
+            except OSError:
+                time.sleep(1.0)
                 continue
-            new_lines = lines[seen:]
-            for line in new_lines:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                try:
-                    if mode == "claude":
-                        pretty_claude(ev)
-                    else:
-                        pretty_mediated(ev)
-                except Exception as exc:
-                    print(f"{RED}[render error] {exc}{RST}")
+            _render_lines(lines[seen:], mode)
             seen = len(lines)
             sys.stdout.flush()
+
+        # Check run status for auto-exit.
+        if exit_when_done and run_json_path is not None:
+            status = _read_run_status(run_json_path)
+            if status in ("completed", "failed"):
+                if terminal_first_seen_at is None:
+                    terminal_first_seen_at = time.monotonic()
+                    print(
+                        f"{GRN}[QA run {status}] — watcher will exit in "
+                        f"{TERMINAL_GRACE_SECONDS:.0f}s{RST}",
+                        flush=True,
+                    )
+                elif time.monotonic() - terminal_first_seen_at >= TERMINAL_GRACE_SECONDS:
+                    # One last drain in case the jsonl grew in the grace window.
+                    if path.exists():
+                        try:
+                            with path.open(encoding="utf-8") as fh:
+                                lines = fh.readlines()
+                            _render_lines(lines[seen:], mode)
+                            seen = len(lines)
+                            sys.stdout.flush()
+                        except OSError:
+                            pass
+                    print(f"{DIM}[watcher exited]{RST}", flush=True)
+                    return 0
+
         time.sleep(1.0)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="qa_watch")
+    parser.add_argument("jsonl_path", help="Path to gladiator stream.jsonl or mediated_trace.jsonl")
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        default="claude",
+        choices=("claude", "mediated"),
+        help="Which schema to pretty-print (default: claude)",
+    )
+    parser.add_argument(
+        "--exit-when-done",
+        action="store_true",
+        default=False,
+        help="Self-exit once the QA run's qa_run.json reports completed/failed",
+    )
+    args = parser.parse_args()
+    return watch(Path(args.jsonl_path), args.mode, args.exit_when_done)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except KeyboardInterrupt:
         sys.exit(0)

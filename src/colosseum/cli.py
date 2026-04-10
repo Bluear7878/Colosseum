@@ -1792,102 +1792,206 @@ def _launch_tmux_monitor(run_id: str) -> bool:
         return False
 
 
+# tmux user-option key used to remember the pane IDs we spawned on a
+# previous `colosseum qa` run. On the next run we kill anything still
+# alive under this key so watcher panes don't accumulate.
+_TMUX_WATCHER_OPTION = "@colosseum_qa_watcher_panes"
+# Title prefix we stamp on every watcher pane. Used to (a) recognize
+# leftover panes from previous runs and (b) avoid picking a watcher pane
+# as the `orig_pane` reference when the user has focus on one.
+_WATCHER_TITLE_PREFIX = "COLOSSEUM_QA_WATCHER"
+
+
+def _run_tmux(*args: str, timeout: float = 5.0) -> subprocess.CompletedProcess[str] | None:
+    """Run a tmux command, swallowing FileNotFound/timeout. None on failure."""
+    try:
+        return subprocess.run(
+            ["tmux", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+
+def _kill_previous_watcher_panes() -> int:
+    """Kill any watcher panes that survived a previous `colosseum qa` run.
+
+    Uses two independent signals to find leftovers:
+      1. The `@colosseum_qa_watcher_panes` tmux user-option we wrote
+         ourselves last time (space-separated pane ids).
+      2. Any pane whose title begins with `_WATCHER_TITLE_PREFIX` — this
+         catches the case where the option was cleared but panes still
+         exist (e.g. the previous run crashed before saving).
+
+    Returns the number of panes killed. Safe to call even when there are
+    no leftovers.
+    """
+    killed = 0
+
+    # (1) from user-option
+    result = _run_tmux("show-option", "-gqv", _TMUX_WATCHER_OPTION)
+    if result is not None and result.returncode == 0:
+        raw = result.stdout.strip()
+        if raw:
+            for pane_id in raw.split():
+                kill_result = _run_tmux("kill-pane", "-t", pane_id)
+                if kill_result is not None and kill_result.returncode == 0:
+                    killed += 1
+        # Clear the option so we start fresh
+        _run_tmux("set-option", "-gu", _TMUX_WATCHER_OPTION)
+
+    # (2) from pane titles
+    list_result = _run_tmux(
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_id} #{pane_title}",
+    )
+    if list_result is not None and list_result.returncode == 0:
+        for line in list_result.stdout.splitlines():
+            parts = line.split(" ", 1)
+            if len(parts) != 2:
+                continue
+            pane_id, title = parts[0], parts[1]
+            if title.startswith(_WATCHER_TITLE_PREFIX):
+                kill_result = _run_tmux("kill-pane", "-t", pane_id)
+                if kill_result is not None and kill_result.returncode == 0:
+                    killed += 1
+    return killed
+
+
+def _pick_orig_pane() -> str | None:
+    """Pick a pane to anchor our splits on.
+
+    Prefer the currently active pane IF it's not already a watcher pane.
+    Otherwise fall back to the first non-watcher pane in the current
+    window. Returns None on hard tmux failure.
+    """
+    # Start with the active pane.
+    result = _run_tmux("display-message", "-p", "#{pane_id} #{pane_title}")
+    if result is None or result.returncode != 0:
+        return None
+    parts = result.stdout.strip().split(" ", 1)
+    if not parts:
+        return None
+    active_id = parts[0]
+    active_title = parts[1] if len(parts) > 1 else ""
+    if not active_title.startswith(_WATCHER_TITLE_PREFIX):
+        return active_id
+
+    # Active pane is a stale watcher. Find a sibling that isn't.
+    list_result = _run_tmux(
+        "list-panes",
+        "-F",
+        "#{pane_id} #{pane_title}",
+    )
+    if list_result is None or list_result.returncode != 0:
+        return active_id  # best-effort fallback
+    for line in list_result.stdout.splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) < 1:
+            continue
+        pane_id = parts[0]
+        title = parts[1] if len(parts) > 1 else ""
+        if not title.startswith(_WATCHER_TITLE_PREFIX):
+            return pane_id
+    return active_id  # fallback — no non-watcher panes visible
+
+
 def _launch_tmux_qa_panes(
     run_id: str,
     gladiators: list[tuple[str, str, str]],
-) -> bool:
+) -> list[str]:
     """Split the current tmux pane into one watcher pane per QA gladiator.
 
     `gladiators` is a list of `(gladiator_id, mode, jsonl_path)` tuples where
     `mode` is "claude" (for ClaudeQAExecutor stream.jsonl) or "mediated"
     (for MediatedQAExecutor mediated_trace.jsonl).
 
-    Returns True if panes were successfully created, False otherwise (not in
-    tmux, tmux missing, etc.). Failure is non-fatal — the QA run continues.
+    Returns the list of pane IDs we spawned (empty list on failure). The
+    caller can use the list to kill them when the run completes, but
+    `qa_watch.py` also self-exits once the run's qa_run.json reports a
+    terminal status.
+
+    Before creating new panes, any leftover watcher panes from a previous
+    run are killed first so they don't accumulate across invocations.
     """
     if not os.environ.get("TMUX"):
-        return False
+        return []
     if not shutil.which("tmux"):
-        return False
+        return []
     if not gladiators:
-        return False
+        return []
 
-    try:
-        orig_pane = subprocess.run(
-            ["tmux", "display-message", "-p", "#{pane_id}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        ).stdout.strip()
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return False
+    # Clean up stale watchers from previous runs first.
+    _kill_previous_watcher_panes()
+
+    orig_pane = _pick_orig_pane()
     if not orig_pane:
-        return False
+        return []
 
+    spawned: list[str] = []
     last_pane = orig_pane
     for index, (gladiator_id, mode, jsonl_path) in enumerate(gladiators):
-        # First split goes horizontal (right side, ~50%); subsequent splits
-        # go vertical inside the right column.
+        # First split: carve off the right half of `orig_pane`.
+        # Subsequent splits: divide the last spawned pane vertically so
+        # that all watcher panes end up stacked in the right column.
+        #
+        # Percent formula: to end up with K equal horizontal stripes in
+        # the right column, each step must take 1/(remaining+1) of its
+        # parent. remaining = len - index, so the divisor is
+        # (len - index) + 1 when splitting, but for index==0 we want
+        # 50% (half of orig_pane), and for index>=1 we want
+        # 100/(len - index + 1) — e.g. 3 gladiators: 50, 50, 50.
         split_args = ["tmux", "split-window", "-P", "-F", "#{pane_id}"]
         if index == 0:
-            split_args += ["-h", "-p", "50", "-t", orig_pane]
+            split_args += ["-h", "-l", "50%", "-t", orig_pane]
         else:
-            remaining = len(gladiators) - index
-            percent = max(20, int(100 / remaining))
-            split_args += ["-v", "-p", str(percent), "-t", last_pane]
+            remaining_incl_self = len(gladiators) - index + 1
+            percent = max(20, 100 // remaining_incl_self)
+            split_args += ["-v", "-l", f"{percent}%", "-t", last_pane]
         cmd = (
             f"{sys.executable} -m colosseum.qa_watch "
-            f"{shlex.quote(jsonl_path)} {shlex.quote(mode)}"
+            f"{shlex.quote(jsonl_path)} {shlex.quote(mode)} --exit-when-done"
         )
         split_args.append(cmd)
-        try:
-            new_pane = subprocess.run(
-                split_args,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
-            ).stdout.strip()
-        except (FileNotFoundError, subprocess.SubprocessError):
-            return False
-        if not new_pane:
-            return False
+        result = _run_tmux(*split_args[1:])  # strip leading 'tmux'
+        if result is None or result.returncode != 0 or not result.stdout.strip():
+            # Roll back whatever we created so we don't leak panes.
+            for pid in spawned:
+                _run_tmux("kill-pane", "-t", pid)
+            return []
+        new_pane = result.stdout.strip()
+        spawned.append(new_pane)
         last_pane = new_pane
-        title = f"{gladiator_id} ({mode})"
-        try:
-            subprocess.run(
-                ["tmux", "select-pane", "-t", new_pane, "-T", title],
-                capture_output=True,
-                timeout=5,
-                check=False,
-            )
-        except (FileNotFoundError, subprocess.SubprocessError):
-            pass
+        title = f"{_WATCHER_TITLE_PREFIX}:{gladiator_id}({mode})"
+        _run_tmux("select-pane", "-t", new_pane, "-T", title)
+
+    # Record the spawned pane IDs so the next run can clean them up.
+    if spawned:
+        _run_tmux(
+            "set-option",
+            "-g",
+            _TMUX_WATCHER_OPTION,
+            " ".join(spawned),
+        )
 
     # Show pane titles and return focus to the original conversation pane.
-    try:
-        subprocess.run(
-            ["tmux", "set", "-w", "pane-border-status", "top"],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-        subprocess.run(
-            ["tmux", "set", "-w", "pane-border-format", " #{pane_title} "],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-        subprocess.run(
-            ["tmux", "select-pane", "-t", orig_pane],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        pass
-    return True
+    _run_tmux("set", "-w", "pane-border-status", "top")
+    _run_tmux("set", "-w", "pane-border-format", " #{pane_title} ")
+    _run_tmux("select-pane", "-t", orig_pane)
+    return spawned
+
+
+def _kill_watcher_panes(pane_ids: list[str]) -> None:
+    """Kill a specific list of watcher panes (best-effort)."""
+    for pane_id in pane_ids:
+        _run_tmux("kill-pane", "-t", pane_id)
+    # Also clear the tmux user-option so stale IDs don't persist.
+    _run_tmux("set-option", "-gu", _TMUX_WATCHER_OPTION)
 
 
 def cmd_debate(args: argparse.Namespace) -> None:
@@ -3605,11 +3709,13 @@ async def _run_qa_live(orch, request: QACreateRequest, monitor: bool = True):
                         path = gd / "mediated_trace.jsonl"
                         mode = "mediated"
                     gladiator_specs.append((gid, mode, str(path)))
-                if _launch_tmux_qa_panes(current_run_id, gladiator_specs):
+                spawned = _launch_tmux_qa_panes(current_run_id, gladiator_specs)
+                if spawned:
                     monitor_launched = True
                     print(
                         f"  {DIM}Monitor: tmux panes spawned "
-                        f"({len(gladiator_specs)} gladiators){RST}"
+                        f"({len(spawned)} gladiators, "
+                        f"auto-exit when run completes){RST}"
                     )
                 else:
                     print(

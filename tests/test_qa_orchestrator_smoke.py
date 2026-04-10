@@ -434,6 +434,262 @@ def test_preflight_skips_colosseum_only_dirty(tmp_path, monkeypatch):
     assert dirty_warns == [], f"unexpected dirty warning: {dirty_warns}"
 
 
+def test_qa_watch_infers_run_json_path(tmp_path):
+    """qa_watch auto-detects the qa_run.json sibling from a jsonl path."""
+    from colosseum.qa_watch import _infer_run_json_path
+
+    jsonl = tmp_path / ".colosseum" / "qa" / "run-abc" / "gladiators" / "c_0" / "stream.jsonl"
+    jsonl.parent.mkdir(parents=True)
+    jsonl.touch()
+    expected = tmp_path / ".colosseum" / "qa" / "run-abc" / "qa_run.json"
+    assert _infer_run_json_path(jsonl) == expected
+
+
+def test_qa_watch_reads_run_status(tmp_path):
+    """qa_watch parses the status field from qa_run.json."""
+    from colosseum.qa_watch import _read_run_status
+
+    run_json = tmp_path / "qa_run.json"
+    run_json.write_text('{"status": "running"}', encoding="utf-8")
+    assert _read_run_status(run_json) == "running"
+
+    run_json.write_text('{"status": "completed"}', encoding="utf-8")
+    assert _read_run_status(run_json) == "completed"
+
+    # Missing file → None
+    assert _read_run_status(tmp_path / "does-not-exist.json") is None
+
+    # Malformed JSON → None
+    run_json.write_text("not json", encoding="utf-8")
+    assert _read_run_status(run_json) is None
+
+    # Missing status key → None
+    run_json.write_text('{"other": "x"}', encoding="utf-8")
+    assert _read_run_status(run_json) is None
+
+
+def test_launch_tmux_qa_panes_skips_when_not_in_tmux(monkeypatch):
+    """Without $TMUX, the function returns an empty list (no-op)."""
+    from colosseum import cli as _cli
+
+    monkeypatch.delenv("TMUX", raising=False)
+    spawned = _cli._launch_tmux_qa_panes(
+        "run-id",
+        [("c_0", "claude", "/tmp/fake.jsonl")],
+    )
+    assert spawned == []
+
+
+def test_launch_tmux_qa_panes_empty_gladiator_list(monkeypatch):
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+    from colosseum import cli as _cli
+
+    assert _cli._launch_tmux_qa_panes("run", []) == []
+
+
+class _FakeTmuxRunner:
+    """Records every `tmux ...` call and returns canned outputs by verb."""
+
+    def __init__(self, responses: dict):
+        self.responses = responses
+        self.calls: list[list[str]] = []
+
+    def __call__(self, *args, timeout: float = 5.0):
+        self.calls.append(list(args))
+        verb = args[0] if args else ""
+        canned = self.responses.get(verb)
+        if canned is None:
+            return _FakeResult(returncode=0, stdout="", stderr="")
+        if callable(canned):
+            return canned(list(args), self.calls)
+        return canned
+
+
+class _FakeResult:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_launch_tmux_qa_panes_percent_formula_three_gladiators(monkeypatch):
+    """With 3 gladiators, every split should use 50% (not 100%)."""
+    from colosseum import cli as _cli
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+
+    pane_counter = {"next": 10}
+
+    def fake_split_window(args, calls):
+        pane_counter["next"] += 1
+        return _FakeResult(returncode=0, stdout=f"%{pane_counter['next']}", stderr="")
+
+    runner = _FakeTmuxRunner(
+        responses={
+            "display-message": _FakeResult(returncode=0, stdout="%0 CONVERSATION\n"),
+            "list-panes": _FakeResult(returncode=0, stdout=""),
+            "show-option": _FakeResult(returncode=0, stdout=""),
+            "split-window": fake_split_window,
+            "select-pane": _FakeResult(returncode=0, stdout=""),
+            "set-option": _FakeResult(returncode=0, stdout=""),
+            "set": _FakeResult(returncode=0, stdout=""),
+            "kill-pane": _FakeResult(returncode=0, stdout=""),
+        }
+    )
+    monkeypatch.setattr(_cli, "_run_tmux", runner)
+    monkeypatch.setattr(_cli.shutil, "which", lambda binary: "/usr/bin/tmux")
+
+    gladiators = [
+        ("c_0", "claude", "/tmp/a.jsonl"),
+        ("c_1", "claude", "/tmp/b.jsonl"),
+        ("g_2", "mediated", "/tmp/c.jsonl"),
+    ]
+    spawned = _cli._launch_tmux_qa_panes("run-id", gladiators)
+    assert len(spawned) == 3
+
+    # Extract the split-window calls in order
+    splits = [c for c in runner.calls if c and c[0] == "split-window"]
+    assert len(splits) == 3
+
+    # First split: -h -l 50%
+    assert "-h" in splits[0]
+    assert "-l" in splits[0]
+    assert "50%" in splits[0]
+
+    # Second split: -v -l 50% (remaining_incl_self = 3 - 1 + 1 = 3 → actually 100/3=33 NO)
+    # wait: remaining_incl_self = len(gladiators) - index + 1 = 3 - 1 + 1 = 3 → 33%
+    # and third: 3 - 2 + 1 = 2 → 50%
+    assert "-v" in splits[1]
+    assert "-l" in splits[1]
+    # Percent is 33% for index=1 (remaining_incl_self=3)
+    assert "33%" in splits[1]
+
+    assert "-v" in splits[2]
+    assert "-l" in splits[2]
+    assert "50%" in splits[2]
+
+    # And 100% should NEVER appear.
+    for s in splits:
+        assert "100%" not in s, f"bogus 100% split: {s}"
+
+
+def test_launch_tmux_qa_panes_saves_pane_ids_to_option(monkeypatch):
+    from colosseum import cli as _cli
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+
+    counter = {"n": 100}
+
+    def fake_split(args, calls):
+        counter["n"] += 1
+        return _FakeResult(returncode=0, stdout=f"%{counter['n']}")
+
+    runner = _FakeTmuxRunner(
+        responses={
+            "display-message": _FakeResult(stdout="%0 CONVERSATION"),
+            "list-panes": _FakeResult(stdout=""),
+            "show-option": _FakeResult(stdout=""),
+            "split-window": fake_split,
+            "select-pane": _FakeResult(),
+            "set-option": _FakeResult(),
+            "set": _FakeResult(),
+            "kill-pane": _FakeResult(),
+        }
+    )
+    monkeypatch.setattr(_cli, "_run_tmux", runner)
+    monkeypatch.setattr(_cli.shutil, "which", lambda binary: "/usr/bin/tmux")
+
+    spawned = _cli._launch_tmux_qa_panes(
+        "run-id",
+        [("c_0", "claude", "/tmp/a.jsonl")],
+    )
+    assert spawned == ["%101"]
+
+    # A `set-option -g <option> "<ids>"` call should have been made with
+    # the spawned pane IDs as the value. Filter out the `-gu` (unset)
+    # call used to clear stale values before spawning.
+    set_option_calls = [
+        c
+        for c in runner.calls
+        if c and c[0] == "set-option" and "-gu" not in c
+    ]
+    stored_call = next(
+        (c for c in set_option_calls if _cli._TMUX_WATCHER_OPTION in c), None
+    )
+    assert stored_call is not None, f"no set-option call: {set_option_calls}"
+    # The value is the trailing positional arg (space-separated pane ids).
+    assert "%101" in stored_call[-1]
+
+
+def test_launch_tmux_qa_panes_cleans_previous_leftovers(monkeypatch):
+    """If the user-option already holds stale pane IDs, they should be killed
+    before we spawn new ones."""
+    from colosseum import cli as _cli
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+
+    counter = {"n": 200}
+
+    def fake_split(args, calls):
+        counter["n"] += 1
+        return _FakeResult(returncode=0, stdout=f"%{counter['n']}")
+
+    responses = {
+        "display-message": _FakeResult(stdout="%0 CONVERSATION"),
+        "list-panes": _FakeResult(stdout=""),
+        "show-option": _FakeResult(stdout="%5 %6 %7"),  # ← stale
+        "split-window": fake_split,
+        "select-pane": _FakeResult(),
+        "set-option": _FakeResult(),
+        "set": _FakeResult(),
+        "kill-pane": _FakeResult(),
+    }
+    runner = _FakeTmuxRunner(responses=responses)
+    monkeypatch.setattr(_cli, "_run_tmux", runner)
+    monkeypatch.setattr(_cli.shutil, "which", lambda binary: "/usr/bin/tmux")
+
+    _cli._launch_tmux_qa_panes("run-id", [("c_0", "claude", "/tmp/a.jsonl")])
+
+    kill_calls = [c for c in runner.calls if c and c[0] == "kill-pane"]
+    killed_ids = {c[-1] for c in kill_calls}
+    assert "%5" in killed_ids
+    assert "%6" in killed_ids
+    assert "%7" in killed_ids
+
+
+def test_launch_tmux_qa_panes_avoids_watcher_pane_as_orig(monkeypatch):
+    """If the currently active pane is already a watcher (from a previous
+    run), _pick_orig_pane must fall through to a non-watcher sibling."""
+    from colosseum import cli as _cli
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-0/default,1,0")
+
+    calls: list[list[str]] = []
+
+    def fake_run_tmux(*args, timeout: float = 5.0):
+        calls.append(list(args))
+        verb = args[0] if args else ""
+        if verb == "display-message":
+            # Active pane IS a stale watcher
+            return _FakeResult(
+                stdout=f"%9 {_cli._WATCHER_TITLE_PREFIX}:c_0(claude)"
+            )
+        if verb == "list-panes":
+            # Siblings: one real conversation pane, one other watcher
+            return _FakeResult(
+                stdout=(
+                    f"%0 some-shell\n"
+                    f"%9 {_cli._WATCHER_TITLE_PREFIX}:c_0(claude)\n"
+                )
+            )
+        return _FakeResult(stdout="")
+
+    monkeypatch.setattr(_cli, "_run_tmux", fake_run_tmux)
+
+    picked = _cli._pick_orig_pane()
+    assert picked == "%0"
+
+
 def test_preflight_still_warns_on_real_dirt(tmp_path, monkeypatch):
     """If there's a real uncommitted source change, the warning still fires."""
     import subprocess as _sp

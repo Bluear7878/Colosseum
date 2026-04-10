@@ -1,11 +1,13 @@
 """Colosseum CLI — Run AI debates from the terminal.
 
 Usage:
+    colosseum quickstart                     Fastest path to your first debate
     colosseum setup                          Install & authenticate CLI providers
     colosseum setup claude codex             Set up specific tools only
     colosseum setup -y                       Auto-confirm all prompts
     colosseum serve                          Start the web UI server
-    colosseum debate --topic "..." -g ...    Run a debate from the terminal
+    colosseum debate --topic "..."           Auto-picks authenticated providers
+    colosseum debate --topic "..." -g ...    Explicit gladiator choice
     colosseum debate --topic "..." --mock    Quick test with mock providers (free)
     colosseum debate --topic "..." --monitor Run with tmux monitor panel
     colosseum review -t "..." -g ... --dir . Multi-phase code review
@@ -866,10 +868,87 @@ def cmd_delete(args: argparse.Namespace) -> None:
     print(f"  {GREEN}Deleted run {run_dir.name[:8]}...{RST}\n")
 
 
-def _check_tool_status(tool_name: str, info: dict) -> dict:
+# ── Auth status cache ───────────────────────────────────────────
+#
+# The auth probe (`claude -p "say ok"`, etc.) takes up to 30s per provider,
+# so `colosseum setup` without a cache takes ~2 minutes on a fresh shell.
+# We cache the probe result per tool in ~/.colosseum/auth_cache.json with a
+# 24-hour TTL. Install (`shutil.which`) and version checks are cheap and
+# always run fresh; only the probe is cached.
+
+_AUTH_CACHE_TTL_SECONDS = 24 * 3600
+
+
+def _auth_cache_path():
+    from pathlib import Path
+
+    return Path.home() / ".colosseum" / "auth_cache.json"
+
+
+def _load_auth_cache() -> dict:
+    path = _auth_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        import json as _json
+
+        with path.open(encoding="utf-8") as fh:
+            data = _json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_auth_cache(cache: dict) -> None:
+    path = _auth_cache_path()
+    try:
+        import json as _json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            _json.dump(cache, fh, indent=2)
+    except Exception:
+        pass
+
+
+def _get_cached_auth(tool_name: str) -> dict | None:
+    cache = _load_auth_cache()
+    entry = cache.get(tool_name)
+    if not isinstance(entry, dict):
+        return None
+    ts = entry.get("timestamp", 0)
+    if time.time() - ts > _AUTH_CACHE_TTL_SECONDS:
+        return None
+    return entry
+
+
+def _set_cached_auth(tool_name: str, auth_ok: bool, auth_detail: str) -> None:
+    cache = _load_auth_cache()
+    cache[tool_name] = {
+        "auth_ok": bool(auth_ok),
+        "auth_detail": auth_detail,
+        "timestamp": time.time(),
+    }
+    _save_auth_cache(cache)
+
+
+def clear_auth_cache() -> None:
+    """Public helper: delete the on-disk auth cache file."""
+    path = _auth_cache_path()
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _check_tool_status(tool_name: str, info: dict, use_cache: bool = True) -> dict:
     """Check a single CLI tool's install and auth status.
 
     Returns dict with keys: installed, version, auth_ok, auth_detail.
+
+    When ``use_cache`` is True (default) the expensive auth probe is skipped
+    if a fresh entry exists in ``~/.colosseum/auth_cache.json``. Install
+    (``shutil.which``) and version checks always run fresh.
     """
     status: dict = {
         "tool": tool_name,
@@ -899,6 +978,14 @@ def _check_tool_status(tool_name: str, info: dict) -> dict:
 
     # Auth check: for tools with login, try a trivial call to see if authenticated.
     if info.get("login"):
+        # Fast path: reuse a recent probe result if still valid.
+        if use_cache:
+            cached = _get_cached_auth(tool_name)
+            if cached is not None:
+                status["auth_ok"] = bool(cached.get("auth_ok"))
+                status["auth_detail"] = cached.get("auth_detail", "") or "cached"
+                return status
+
         # Strip Claude Code nesting vars so the probe isn't blocked by nested-session guard
         probe_env = {**os.environ}
         for _k in ("CLAUDECODE", "CLAUDE_CODE"):
@@ -953,6 +1040,9 @@ def _check_tool_status(tool_name: str, info: dict) -> dict:
             status["auth_detail"] = "timeout (may need login)"
         except Exception:
             status["auth_detail"] = "check failed"
+
+        # Persist probe result so the next `setup` / `check` is instant.
+        _set_cached_auth(tool_name, status["auth_ok"], status["auth_detail"])
     elif tool_name == "llmfit":
         # llmfit — local binary, no auth or runtime needed
         status["auth_ok"] = status["installed"]
@@ -1053,6 +1143,10 @@ def cmd_setup(args: argparse.Namespace) -> None:
     tools_to_setup = args.tools if args.tools else list(CLI_AUTH_INFO.keys())
     skip_auth = args.skip_auth
     yes_all = args.yes
+    use_cache = not getattr(args, "refresh", False)
+    if not use_cache:
+        clear_auth_cache()
+        print(f"  {DIM}Auth cache cleared — re-probing all tools.{RST}\n")
 
     summary: list[dict] = []
 
@@ -1067,7 +1161,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print(f"  {DIM}{info['billing']}{RST}\n")
 
         # Step 1: Check if installed
-        status = _check_tool_status(tool_name, info)
+        status = _check_tool_status(tool_name, info, use_cache=use_cache)
 
         if status["installed"]:
             print(f"    {GREEN}✓ Installed{RST}  {DIM}{status['version'] or ''}{RST}")
@@ -1178,11 +1272,202 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print()
 
 
-def get_all_tool_statuses() -> list[dict]:
+# ── Quickstart ──────────────────────────────────────────────────
+
+
+def _default_model_for(tool_name: str) -> str | None:
+    """Return the first known ``provider:model`` spec for a tool."""
+    if tool_name == "ollama":
+        return "ollama:llama3.2"
+    for m in MODELS:
+        if m["id"].startswith(f"{tool_name}:"):
+            return m["id"]
+    return None
+
+
+def _pick_default_gladiators(statuses: list[dict], count: int = 2) -> list[str]:
+    """Return up to ``count`` ``provider:model`` specs ready to debate.
+
+    Ordering prefers paid CLIs (better quality) over ollama, but always
+    includes ollama as a fallback when nothing else is ready. Tools that are
+    installed but not authenticated are ignored.
+    """
+    preferred_order = ["claude", "codex", "gemini", "ollama"]
+    by_tool = {s["tool"]: s for s in statuses}
+    picks: list[str] = []
+    for tool in preferred_order:
+        s = by_tool.get(tool)
+        if not s or not s.get("installed") or not s.get("auth_ok"):
+            continue
+        spec = _default_model_for(tool)
+        if spec:
+            picks.append(spec)
+        if len(picks) >= count:
+            break
+    return picks
+
+
+def _prompt_yes(message: str, default_yes: bool = True) -> bool:
+    """Ask a yes/no question; treat EOF/ctrl-c as 'no'."""
+    suffix = "[Y/n]" if default_yes else "[y/N]"
+    try:
+        answer = input(f"    {message} {suffix} ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if not answer:
+        return default_yes
+    return answer in ("y", "yes")
+
+
+def cmd_quickstart(args: argparse.Namespace) -> None:
+    """One-command onboarding: pick the fastest path to a working debate.
+
+    Unlike ``colosseum setup``, which walks through every provider, this
+    command finds a single ready provider (or guides the user through one)
+    and prints a copy-pasteable debate command.
+    """
+    _print_header()
+    print(f"  {BOLD}Quickstart{RST}  {DIM}— fastest path to your first debate{RST}\n")
+
+    if getattr(args, "refresh", False):
+        clear_auth_cache()
+        print(f"  {DIM}Auth cache cleared — re-probing.{RST}\n")
+
+    # Fast scan (uses cache — typically ~1s on a warm run).
+    statuses = get_all_tool_statuses(use_cache=not getattr(args, "refresh", False))
+    ready = [s for s in statuses if s["installed"] and s["auth_ok"]]
+    ready_tools = {s["tool"] for s in ready}
+
+    print(f"  {BOLD}Current state{RST}")
+    for s in statuses:
+        if s["tool"] == "llmfit":
+            continue
+        mark = (
+            f"{GREEN}ready{RST}"
+            if s["installed"] and s["auth_ok"]
+            else f"{GOLD}not ready{RST}"
+        )
+        detail = s.get("auth_detail", "") or ""
+        print(f"    {BOLD}{s['tool']:<8}{RST}  {mark}  {DIM}{detail}{RST}")
+    print()
+
+    # Path A — already enough to debate.
+    debate_ready_tools = ready_tools - {"llmfit"}
+    if len(debate_ready_tools) >= 2:
+        picks = _pick_default_gladiators(statuses, count=2)
+        print(f"  {GREEN}✓ You already have {len(debate_ready_tools)} providers ready.{RST}\n")
+        print("  Try your first debate:\n")
+        print(f'    {CYAN}colosseum debate -t "Should we use microservices?" -g {" ".join(picks)}{RST}\n')
+        print(
+            f"  {DIM}Or omit -g and Colosseum will auto-pick defaults:{RST}\n"
+            f'    {CYAN}colosseum debate -t "..."{RST}\n'
+        )
+        return
+
+    # Path B — exactly one paid CLI authed. Offer to add a free local partner.
+    paid_ready = debate_ready_tools - {"ollama"}
+    if len(paid_ready) == 1 and "ollama" not in debate_ready_tools:
+        only_tool = next(iter(paid_ready))
+        print(f"  {GREEN}✓ {only_tool} is ready.{RST}")
+        print(
+            f"  {DIM}A debate needs 2 gladiators. Ollama is free and needs no login.{RST}\n"
+        )
+        if _prompt_yes("Install Ollama (free, runs locally) to pair with " + only_tool + "?"):
+            info = CLI_AUTH_INFO["ollama"]
+            if _install_tool("ollama", info):
+                print(f"    {GREEN}Ollama installed.{RST}")
+                print(
+                    f"    {DIM}Pull a small model with: {RST}colosseum local-runtime pull llama3.2\n"
+                )
+            else:
+                print(
+                    f"    {GOLD}Ollama install failed — run manually: {info['install_cmd']}{RST}\n"
+                )
+        else:
+            print(
+                f"    {DIM}Skipped. You can still test with: {RST}"
+                f"{CYAN}colosseum debate --mock -t \"...\"{RST}\n"
+            )
+        return
+
+    # Path C — nothing ready. Recommend a single simplest path.
+    print(f"  {GOLD}No provider ready yet.{RST} Pick {BOLD}one{RST} to get started:\n")
+    print(f"    {BOLD}1){RST} {CYAN}Ollama{RST}   {DIM}(free, no login, runs locally){RST}")
+    print(
+        f"    {BOLD}2){RST} {CYAN}Claude{RST}   "
+        f"{DIM}(needs Node.js + Claude Pro/Max account){RST}"
+    )
+    print(
+        f"    {BOLD}3){RST} {CYAN}Codex{RST}    "
+        f"{DIM}(needs Node.js + ChatGPT Plus/Pro account){RST}"
+    )
+    print(
+        f"    {BOLD}4){RST} {CYAN}Gemini{RST}   "
+        f"{DIM}(needs Node.js + Google account, free tier available){RST}\n"
+    )
+    try:
+        choice = input("    Choose 1–4 (default 1): ").strip() or "1"
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    choice_map = {"1": "ollama", "2": "claude", "3": "codex", "4": "gemini"}
+    picked_tool = choice_map.get(choice)
+    if not picked_tool:
+        print(f"    {RED}Invalid choice: {choice}{RST}\n")
+        return
+
+    info = CLI_AUTH_INFO[picked_tool]
+    print(f"\n  {BOLD}Setting up {picked_tool}{RST}\n")
+
+    # Install if missing.
+    if not shutil.which(info["cmd"]):
+        if not _install_tool(picked_tool, info):
+            print(
+                f"    {GOLD}Install did not complete. Try manually:{RST} "
+                f"{info['install_cmd']}\n"
+            )
+            return
+
+    # Login if the tool supports it.
+    if info.get("login"):
+        print(f"\n    {DIM}Launching interactive login...{RST}")
+        if not _run_login(picked_tool, info):
+            print(
+                f"    {GOLD}Login incomplete. Run '{info['login']}' when ready, "
+                f"then re-run {BOLD}colosseum quickstart{RST}{GOLD}.{RST}\n"
+            )
+            return
+
+    # Re-probe (bypass cache — state just changed).
+    clear_auth_cache()
+    final = _check_tool_status(picked_tool, info, use_cache=False)
+    if final.get("auth_ok"):
+        print(f"    {GREEN}✓ {picked_tool} ready.{RST}\n")
+        spec = _default_model_for(picked_tool) or f"{picked_tool}:default"
+        print(f"  {BOLD}Try your first debate:{RST}")
+        print(
+            f'    {CYAN}colosseum debate -t "Your topic" -g {spec} mock:beta{RST}  '
+            f"{DIM}(one real + one mock){RST}"
+        )
+        print(
+            f"  {DIM}Or add ollama (no login) for a free second gladiator:{RST}\n"
+            f"    {CYAN}colosseum quickstart{RST}  "
+            f"{DIM}(re-run, choose 1 this time){RST}\n"
+        )
+    else:
+        print(
+            f"    {GOLD}{picked_tool} still not ready: "
+            f"{final.get('auth_detail', 'unknown')}{RST}\n"
+        )
+
+
+def get_all_tool_statuses(use_cache: bool = True) -> list[dict]:
     """Return install/auth status for all CLI tools (used by API)."""
     statuses = []
     for tool_name, info in CLI_AUTH_INFO.items():
-        status = _check_tool_status(tool_name, info)
+        status = _check_tool_status(tool_name, info, use_cache=use_cache)
         status["login_cmd"] = info.get("login")
         status["install_cmd"] = info.get("install_cmd", "")
         status["billing"] = info.get("billing", "")
@@ -1190,10 +1475,14 @@ def get_all_tool_statuses() -> list[dict]:
     return statuses
 
 
-def cmd_check(_args: argparse.Namespace) -> None:
+def cmd_check(args: argparse.Namespace) -> None:
     """Verify CLI tool availability and auth status."""
     _print_header()
     print(f"  {BOLD}CLI Tool Check{RST}\n")
+
+    if getattr(args, "refresh", False):
+        clear_auth_cache()
+        print(f"  {DIM}Auth cache cleared — re-probing all tools.{RST}\n")
 
     for tool_name, info in CLI_AUTH_INFO.items():
         found = shutil.which(info["cmd"]) is not None
@@ -1367,6 +1656,14 @@ def cmd_debate(args: argparse.Namespace) -> None:
     else:
         gladiator_specs = args.gladiators or []
 
+    # Smart default: if -g was omitted, auto-pick from whatever is authed.
+    # Uses the auth cache so this is near-instant on a warm run.
+    auto_picked = False
+    if not gladiator_specs:
+        auto_picked = True
+        statuses = get_all_tool_statuses(use_cache=True)
+        gladiator_specs = _pick_default_gladiators(statuses, count=2)
+
     if not json_output:
         _print_header()
 
@@ -1378,8 +1675,21 @@ def cmd_debate(args: argparse.Namespace) -> None:
                 _json.dumps({"error": f"Need at least 2 gladiators. Got {len(gladiator_specs)}."})
             )
         else:
-            print(f"  {RED}Need at least 2 gladiators. Use -g or --mock.{RST}\n")
+            if auto_picked:
+                print(
+                    f"  {GOLD}No authenticated providers found.{RST}\n"
+                    f"  Run {CYAN}colosseum quickstart{RST} to set one up,\n"
+                    f"  or try {CYAN}colosseum debate --mock -t \"...\"{RST} for a free test.\n"
+                )
+            else:
+                print(f"  {RED}Need at least 2 gladiators. Use -g or --mock.{RST}\n")
         sys.exit(1)
+
+    if auto_picked and not json_output:
+        print(
+            f"  {DIM}Auto-picked gladiators (override with -g): "
+            f"{', '.join(gladiator_specs)}{RST}"
+        )
 
     # Parse gladiators
     agents = []
@@ -2954,9 +3264,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Auto-confirm all install/auth prompts",
     )
+    p_setup.add_argument(
+        "--refresh",
+        action="store_true",
+        default=False,
+        help="Ignore the cached auth status and re-probe every provider.",
+    )
+
+    # quickstart
+    p_quickstart = sub.add_parser(
+        "quickstart",
+        help="Fastest path to your first debate — single-provider onboarding",
+    )
+    p_quickstart.add_argument(
+        "--refresh",
+        action="store_true",
+        default=False,
+        help="Ignore the cached auth status and re-probe every provider.",
+    )
 
     # check
-    sub.add_parser("check", help="Verify CLI tool availability and auth")
+    p_check = sub.add_parser("check", help="Verify CLI tool availability and auth")
+    p_check.add_argument(
+        "--refresh",
+        action="store_true",
+        default=False,
+        help="Ignore the cached auth status and re-probe every provider.",
+    )
 
     # delete
     p_delete = sub.add_parser("delete", help="Delete a past battle run")
@@ -2972,7 +3306,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="extend",
         nargs="+",
         default=None,
-        help="Gladiator specs: provider:model (e.g. -g claude:claude-sonnet-4-6 ollama:llama3.3 or -g mock:a -g mock:b)",
+        help=(
+            "Gladiator specs: provider:model "
+            "(e.g. -g claude:claude-sonnet-4-6 ollama:llama3.3). "
+            "Omit to auto-pick from authenticated providers."
+        ),
     )
     p_debate.add_argument(
         "-d",
@@ -3181,6 +3519,7 @@ def main() -> None:
     commands = {
         "serve": cmd_serve,
         "setup": cmd_setup,
+        "quickstart": cmd_quickstart,
         "models": cmd_models,
         "local-runtime": cmd_local_runtime,
         "hf": cmd_hf,

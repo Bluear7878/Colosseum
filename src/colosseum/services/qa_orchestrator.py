@@ -347,11 +347,31 @@ class QAOrchestrator:
         async def _on_event(name: str, payload: dict[str, Any]) -> None:
             await emit(name, payload)
 
+        results: list[QAGladiatorOutcome | None] = [None] * len(gladiator_ids)
+
+        def _persist_snapshot() -> None:
+            run.gladiators = [
+                r if r is not None else run.gladiators[i]
+                for i, r in enumerate(results)
+            ]
+            run.touch()
+            try:
+                self.repository.save_run(run)
+            except Exception as exc:
+                logger.warning("mid-run save_run failed: %s", exc)
+
         async def _run_one(idx: int) -> QAGladiatorOutcome:
             gladiator_id = gladiator_ids[idx]
             agent = request.gladiators[idx]
             gladiator_dir = self.repository.gladiator_dir(run.run_id, gladiator_id)
             assigned = plan.allocations.get(gladiator_id, [])
+
+            # Mark this gladiator as RUNNING in the persisted snapshot so
+            # external observers can tell it has actually started.
+            run.gladiators[idx].status = QAGladiatorStatus.RUNNING
+            run.gladiators[idx].started_at = datetime.now(timezone.utc)
+            _persist_snapshot()
+
             executor = self.executor_factory(
                 gladiator_id=gladiator_id,
                 agent_config=agent,
@@ -364,10 +384,10 @@ class QAOrchestrator:
                 on_event=_on_event,
             )
             try:
-                return await executor.run()
+                outcome = await executor.run()
             except Exception as exc:
                 logger.exception("gladiator %s crashed", gladiator_id)
-                return QAGladiatorOutcome(
+                outcome = QAGladiatorOutcome(
                     gladiator_id=gladiator_id,
                     display_name=agent.display_name,
                     provider_type=agent.provider.type,
@@ -378,15 +398,18 @@ class QAOrchestrator:
                     started_at=datetime.now(timezone.utc),
                     completed_at=datetime.now(timezone.utc),
                 )
+            results[idx] = outcome
+            _persist_snapshot()
+            return outcome
 
         if plan.mode == "sequential":
-            results: list[QAGladiatorOutcome] = []
             for idx in range(len(gladiator_ids)):
-                results.append(await _run_one(idx))
-            return results
+                await _run_one(idx)
+        else:
+            coros = [_run_one(i) for i in range(len(gladiator_ids))]
+            await asyncio.gather(*coros)
 
-        coros = [_run_one(i) for i in range(len(gladiator_ids))]
-        return list(await asyncio.gather(*coros))
+        return [r if r is not None else run.gladiators[i] for i, r in enumerate(results)]
 
     def _preflight(self, request: QACreateRequest) -> list[str]:
         warnings: list[str] = []
@@ -407,6 +430,41 @@ class QAOrchestrator:
                 warnings.append(
                     "claude binary not found on PATH — Claude gladiators will fail"
                 )
+
+        # Non-Claude provider binary checks. Mediated executor needs the
+        # vendor CLI to be installed and on PATH (it shells out via the
+        # shared cli_wrapper subprocess).
+        provider_binary = {
+            ProviderType.GEMINI_CLI: "gemini",
+            ProviderType.CODEX_CLI: "codex",
+            ProviderType.OLLAMA: "ollama",
+            ProviderType.HUGGINGFACE_LOCAL: "ollama",
+        }
+        for ag in request.gladiators:
+            ptype = ag.provider.type
+            if ptype == ProviderType.CLAUDE_CLI or ptype == ProviderType.MOCK:
+                continue
+            binary = provider_binary.get(ptype)
+            if binary and shutil.which(binary) is None:
+                warnings.append(
+                    f"non-Claude gladiator '{ag.display_name}' needs '{binary}' "
+                    f"on PATH but it is not installed; mediated executor will fail"
+                )
+
+        # Mediated-executor capability warning. Non-Claude gladiators
+        # cannot dispatch sub-agents, so they're effectively limited to
+        # Layer 1-3 of the QA skill. Surface this once per run.
+        non_claude_count = sum(
+            1
+            for ag in request.gladiators
+            if ag.provider.type not in (ProviderType.CLAUDE_CLI, ProviderType.MOCK)
+        )
+        if non_claude_count > 0:
+            warnings.append(
+                f"{non_claude_count} non-Claude gladiator(s) will run via the "
+                f"mediated executor (no native sub-agent dispatch — Layer 1-3 only). "
+                f"QA depth will be reduced for those gladiators."
+            )
 
         # nvidia-smi check
         if not request.brief:

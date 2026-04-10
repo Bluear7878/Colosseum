@@ -178,3 +178,10 @@ QA_FINDING_SEVERITY_WEIGHTS: dict[str, float] = {
 QA_DEFAULT_JUDGE_BUDGET_USD = 30.0
 QA_MEDIATED_MAX_ACTIONS = 200
 QA_MEDIATED_MAX_BASH_TIMEOUT_SECONDS = 1800
+# Per-action provider call timeout for the mediated executor.
+# This is the cap on a single model<->bash round trip; the orchestrator-level
+# stall_timeout_minutes still acts as the outer wall-clock bound.
+QA_MEDIATED_PER_ACTION_TIMEOUT_SECONDS = 300
+# Non-Claude provider preflight: small echo prompt to measure latency before
+# spending the real prompt. Skips healthcheck if disabled.
+QA_PROVIDER_HEALTH_CHECK_TIMEOUT_SECONDS = 60

@@ -47,10 +47,31 @@ def _strip_gemini_noise(raw: str) -> str:
     return build_cli_adapter("gemini").normalize_stdout(raw)
 
 
+QA_ACTION_OPERATIONS = {"qa_action", "qa_synthesis"}
+
+
 def build_prompt(data: dict) -> str:
     operation = data.get("operation", "plan")
     instructions = data.get("instructions", "")
     metadata = data.get("metadata", {})
+
+    # QA mediated executor and QA synthesizer pass already-fully-formed
+    # instructions (system prompt + history). The wrapper must NOT add
+    # debate-style scaffolding (DEBATE TOPIC, fields list, "no markdown
+    # fences" rule) because that conflicts with the QA action protocol
+    # which expects fenced ```json blocks. Pass the instructions through
+    # with only the language preamble.
+    if operation in QA_ACTION_OPERATIONS:
+        sections: list[str] = []
+        response_language = metadata.get("response_language", "")
+        if response_language and response_language != "auto":
+            sections.append(
+                f"MANDATORY LANGUAGE: Write your ENTIRE response in {response_language}. "
+                f"Every field, every sentence must be in {response_language}. "
+                f"No other language permitted."
+            )
+        sections.append(instructions)
+        return "\n\n".join(sections)
 
     persona = metadata.get("persona")
     image_note = build_image_note(metadata)

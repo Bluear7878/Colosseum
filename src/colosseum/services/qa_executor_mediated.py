@@ -37,6 +37,7 @@ from colosseum.core.config import (
     QA_DEFAULT_STALL_TIMEOUT_MINUTES,
     QA_MEDIATED_MAX_ACTIONS,
     QA_MEDIATED_MAX_BASH_TIMEOUT_SECONDS,
+    QA_MEDIATED_PER_ACTION_TIMEOUT_SECONDS,
 )
 from colosseum.core.models import (
     AgentConfig,
@@ -258,6 +259,7 @@ class MediatedQAExecutor:
         max_gladiator_minutes: int = QA_DEFAULT_MAX_GLADIATOR_MINUTES,
         stall_timeout_minutes: int = QA_DEFAULT_STALL_TIMEOUT_MINUTES,
         max_actions: int = QA_MEDIATED_MAX_ACTIONS,
+        per_action_timeout_seconds: int = QA_MEDIATED_PER_ACTION_TIMEOUT_SECONDS,
         on_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self.gladiator_id = gladiator_id
@@ -276,6 +278,7 @@ class MediatedQAExecutor:
         self.max_gladiator_minutes = max_gladiator_minutes
         self.stall_timeout_minutes = stall_timeout_minutes
         self.max_actions = max_actions
+        self.per_action_timeout_seconds = max(30, int(per_action_timeout_seconds))
         self.on_event = on_event
 
     async def run(self) -> QAGladiatorOutcome:
@@ -345,20 +348,49 @@ class MediatedQAExecutor:
                 break
 
             instructions = self._build_user_message(history, action_index)
+            # Pin timeout per call: prevents one slow gemini call from
+            # devouring the entire stall budget. Override is non-destructive
+            # because provider_runtime.execute() does its own model_copy.
+            scoped_provider = self.agent_config.provider.model_copy(deep=True)
+            scoped_provider.timeout_seconds = self.per_action_timeout_seconds
             try:
-                execution = await self.provider_runtime.execute(
-                    run=synthetic_run,
-                    actor_id=self.gladiator_id,
-                    actor_label=self.agent_config.display_name,
-                    provider_config=self.agent_config.provider,
-                    operation="qa_action",
-                    instructions=system_prompt + "\n\n" + instructions,
-                    metadata={
-                        "qa_run_id": self.run_id,
-                        "qa_gladiator_id": self.gladiator_id,
-                        "action_index": action_index,
+                execution = await asyncio.wait_for(
+                    self.provider_runtime.execute(
+                        run=synthetic_run,
+                        actor_id=self.gladiator_id,
+                        actor_label=self.agent_config.display_name,
+                        provider_config=scoped_provider,
+                        operation="qa_action",
+                        instructions=system_prompt + "\n\n" + instructions,
+                        metadata={
+                            "qa_run_id": self.run_id,
+                            "qa_gladiator_id": self.gladiator_id,
+                            "action_index": action_index,
+                            "response_language": self.response_language,
+                        },
+                        timeout_override=self.per_action_timeout_seconds,
+                    ),
+                    timeout=self.per_action_timeout_seconds + 30,
+                )
+            except asyncio.TimeoutError:
+                history.append(
+                    f"[colosseum] Action {action_index} timed out after "
+                    f"{self.per_action_timeout_seconds}s. The model did not "
+                    f"return in time."
+                )
+                self._append_trace(
+                    trace_path,
+                    {
+                        "index": action_index,
+                        "action": {"action": "(timeout)"},
+                        "observation_preview": (
+                            f"per-action timeout {self.per_action_timeout_seconds}s"
+                        ),
                     },
                 )
+                action_index += 1
+                last_event_at = time.monotonic()
+                continue
             except Exception as exc:
                 outcome.status = QAGladiatorStatus.FAILED
                 outcome.error = f"provider call failed at action {action_index}: {exc}"

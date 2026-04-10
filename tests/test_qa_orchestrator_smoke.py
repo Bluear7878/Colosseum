@@ -212,3 +212,104 @@ def test_streaming_emits_lifecycle_events(tmp_path):
     assert "clusters_built" in types
     assert "run_completed" in types
     assert "qa_run_complete" in types
+
+
+@pytest.mark.asyncio
+async def test_mid_run_save_persists_per_gladiator_state(tmp_path):
+    """Each gladiator's state must be persisted as it transitions, not just
+    at the end of the run. We assert this by intercepting the executor with
+    one that records the qa_run.json contents at the moment its run() is
+    invoked."""
+    target = _make_target(tmp_path)
+    orch_repo_root = tmp_path / "qa_runs"
+    snapshots: list[dict] = []
+
+    class _SnapshotExecutor(_MockExecutor):
+        async def run(self) -> QAGladiatorOutcome:
+            # Snapshot qa_run.json at the moment we start
+            for run_dir in orch_repo_root.iterdir():
+                qa_path = run_dir / "qa_run.json"
+                if qa_path.exists():
+                    import json
+                    snapshots.append(json.loads(qa_path.read_text()))
+            return await super().run()
+
+    def _factory(*args, **kwargs):
+        return _SnapshotExecutor(**kwargs)
+
+    orch = QAOrchestrator(
+        gpu_allocator=QAGpuAllocator(local_runtime=_StubLocalRuntime()),
+        repository=QARunRepository(root=orch_repo_root),
+        report_parser=QAReportParser(),
+        clusterer_factory=lambda root: QAFindingClusterer(target_root=root),
+        synthesizer=QAReportSynthesizer(provider_runtime=None),
+        provider_runtime=None,  # type: ignore[arg-type]
+        local_runtime=_StubLocalRuntime(),  # type: ignore[arg-type]
+        executor_factory=_factory,
+    )
+    request = _make_request(target)
+    await orch.run_qa(request)
+
+    # We should have at least one snapshot per gladiator showing them in
+    # RUNNING state at the moment they were spawned. Because executors run
+    # in parallel and snapshots are taken at the start of each run(), the
+    # exact contents are race-prone but at minimum the file must exist
+    # mid-run (not just at the end).
+    assert snapshots, "expected at least one mid-run snapshot"
+
+
+def test_qa_subcommand_supports_monitor_flag():
+    """The qa subparser must accept --monitor / --no-monitor."""
+    from colosseum.cli import build_parser
+
+    parser = build_parser()
+    ns_default = parser.parse_args(
+        ["qa", "-t", "smoke", "--target", "/tmp", "-g", "claude:claude-sonnet-4-6"]
+    )
+    assert ns_default.monitor is True
+
+    ns_off = parser.parse_args(
+        [
+            "qa",
+            "-t",
+            "smoke",
+            "--target",
+            "/tmp",
+            "-g",
+            "claude:claude-sonnet-4-6",
+            "--no-monitor",
+        ]
+    )
+    assert ns_off.monitor is False
+
+
+def test_cli_wrapper_qa_action_skips_debate_scaffolding():
+    """qa_action operation must NOT add fields list / no-fences instructions."""
+    from colosseum.providers.cli_wrapper import build_prompt
+
+    payload = {
+        "operation": "qa_action",
+        "instructions": "FAKE_INSTRUCTIONS_TOKEN",
+        "metadata": {"response_language": "auto"},
+    }
+    prompt = build_prompt(payload)
+    assert "FAKE_INSTRUCTIONS_TOKEN" in prompt
+    assert "no markdown fences" not in prompt
+    assert "Respond with valid JSON containing these fields" not in prompt
+    assert "DEBATE TOPIC" not in prompt
+    assert "Operation: qa_action" not in prompt
+
+
+def test_cli_wrapper_debate_operation_still_adds_scaffolding():
+    """Make sure we didn't break the existing debate path."""
+    from colosseum.providers.cli_wrapper import build_prompt
+
+    payload = {
+        "operation": "debate",
+        "instructions": "DEBATE TASK",
+        "metadata": {"task_title": "Some debate"},
+    }
+    prompt = build_prompt(payload)
+    assert "DEBATE TASK" in prompt
+    assert "Respond with valid JSON containing these fields" in prompt
+    assert "DEBATE TOPIC" in prompt

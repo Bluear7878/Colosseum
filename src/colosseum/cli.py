@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1642,6 +1643,104 @@ def _launch_tmux_monitor(run_id: str) -> bool:
         return True
     except (FileNotFoundError, OSError):
         return False
+
+
+def _launch_tmux_qa_panes(
+    run_id: str,
+    gladiators: list[tuple[str, str, str]],
+) -> bool:
+    """Split the current tmux pane into one watcher pane per QA gladiator.
+
+    `gladiators` is a list of `(gladiator_id, mode, jsonl_path)` tuples where
+    `mode` is "claude" (for ClaudeQAExecutor stream.jsonl) or "mediated"
+    (for MediatedQAExecutor mediated_trace.jsonl).
+
+    Returns True if panes were successfully created, False otherwise (not in
+    tmux, tmux missing, etc.). Failure is non-fatal — the QA run continues.
+    """
+    if not os.environ.get("TMUX"):
+        return False
+    if not shutil.which("tmux"):
+        return False
+    if not gladiators:
+        return False
+
+    try:
+        orig_pane = subprocess.run(
+            ["tmux", "display-message", "-p", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+    if not orig_pane:
+        return False
+
+    last_pane = orig_pane
+    for index, (gladiator_id, mode, jsonl_path) in enumerate(gladiators):
+        # First split goes horizontal (right side, ~50%); subsequent splits
+        # go vertical inside the right column.
+        split_args = ["tmux", "split-window", "-P", "-F", "#{pane_id}"]
+        if index == 0:
+            split_args += ["-h", "-p", "50", "-t", orig_pane]
+        else:
+            remaining = len(gladiators) - index
+            percent = max(20, int(100 / remaining))
+            split_args += ["-v", "-p", str(percent), "-t", last_pane]
+        cmd = (
+            f"{sys.executable} -m colosseum.qa_watch "
+            f"{shlex.quote(jsonl_path)} {shlex.quote(mode)}"
+        )
+        split_args.append(cmd)
+        try:
+            new_pane = subprocess.run(
+                split_args,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            ).stdout.strip()
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return False
+        if not new_pane:
+            return False
+        last_pane = new_pane
+        title = f"{gladiator_id} ({mode})"
+        try:
+            subprocess.run(
+                ["tmux", "select-pane", "-t", new_pane, "-T", title],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            pass
+
+    # Show pane titles and return focus to the original conversation pane.
+    try:
+        subprocess.run(
+            ["tmux", "set", "-w", "pane-border-status", "top"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        subprocess.run(
+            ["tmux", "set", "-w", "pane-border-format", " #{pane_title} "],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        subprocess.run(
+            ["tmux", "select-pane", "-t", orig_pane],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return True
 
 
 def cmd_debate(args: argparse.Namespace) -> None:
@@ -3286,8 +3385,9 @@ def cmd_qa(args: argparse.Namespace) -> None:
 
     orch = get_qa_orchestrator()
 
+    monitor_enabled = bool(getattr(args, "monitor", True))
     try:
-        run = asyncio.run(_run_qa_live(orch, request))
+        run = asyncio.run(_run_qa_live(orch, request, monitor=monitor_enabled))
     except KeyboardInterrupt:
         print(f"\n  {RED}Interrupted by user.{RST}\n")
         sys.exit(130)
@@ -3299,9 +3399,15 @@ def cmd_qa(args: argparse.Namespace) -> None:
     _print_qa_summary(run)
 
 
-async def _run_qa_live(orch, request: QACreateRequest):
+async def _run_qa_live(orch, request: QACreateRequest, monitor: bool = True):
     """Stream QA orchestrator events to the terminal and return the final run."""
+    from colosseum.core.config import QA_RUN_ROOT
+    from colosseum.core.models import ProviderType as _PT
+
     final_run = None
+    current_run_id: str | None = None
+    monitor_launched = False
+
     async for event_type, payload in orch.run_qa_streaming(request):
         if event_type == "preflight":
             warnings = payload.get("warnings") or []
@@ -3321,7 +3427,38 @@ async def _run_qa_live(orch, request: QACreateRequest):
                 gpus_text = ",".join(str(i) for i in gpus) if gpus else "(none)"
                 print(f"    {CYAN}{gid}{RST} → CUDA_VISIBLE_DEVICES={gpus_text}")
         elif event_type == "run_initialized":
-            print(f"  {DIM}Run id: {payload.get('run_id', '?')}{RST}")
+            current_run_id = payload.get("run_id")
+            print(f"  {DIM}Run id: {current_run_id}{RST}")
+            # Spawn tmux watcher panes (one per gladiator) as soon as we know
+            # the run id and gladiator ids. We rely on the orchestrator
+            # creating per-gladiator dirs during init_run().
+            if monitor and current_run_id and not monitor_launched:
+                gladiator_specs: list[tuple[str, str, str]] = []
+                run_dir = QA_RUN_ROOT / current_run_id
+                # Match the orchestrator's _gladiator_id() naming.
+                for index, agent in enumerate(request.gladiators):
+                    base = agent.agent_id or agent.display_name.lower().replace(" ", "_")
+                    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in base)
+                    gid = f"{safe}_{index}"
+                    gd = run_dir / "gladiators" / gid
+                    if agent.provider.type == _PT.CLAUDE_CLI:
+                        path = gd / "stream.jsonl"
+                        mode = "claude"
+                    else:
+                        path = gd / "mediated_trace.jsonl"
+                        mode = "mediated"
+                    gladiator_specs.append((gid, mode, str(path)))
+                if _launch_tmux_qa_panes(current_run_id, gladiator_specs):
+                    monitor_launched = True
+                    print(
+                        f"  {DIM}Monitor: tmux panes spawned "
+                        f"({len(gladiator_specs)} gladiators){RST}"
+                    )
+                else:
+                    print(
+                        f"  {DIM}Monitor: tmux not available, "
+                        f"watcher panes skipped{RST}"
+                    )
         elif event_type == "stash_taken":
             print(f"  {DIM}Stash safety: {payload.get('ref', '?')[:12]}{RST}")
         elif event_type == "gladiator_started":
@@ -3866,6 +4003,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="LANGUAGE",
         help="Response language (e.g. ko, en, ja). Default: auto-detect.",
+    )
+    p_qa.add_argument(
+        "--monitor",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Spawn one tmux watcher pane per gladiator (default: on inside tmux). Use --no-monitor to disable.",
     )
     p_qa.add_argument(
         "--allow-dirty-target",
